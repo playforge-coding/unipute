@@ -1,4 +1,4 @@
-error: `frobnicate` is not a built-in Unipute provides
+error: `frobnicate` is not a built-in Unipute provides, or a `fn` in this kernel
  --> tests/ui/unknown_builtin.rs:5:17
   |
 5 |     output[0] = frobnicate(1.0);

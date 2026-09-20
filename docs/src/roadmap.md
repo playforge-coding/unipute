@@ -8,19 +8,20 @@ here is the list.
 Compute kernels, end to end, across WGSL, SPIR-V, MSL, HLSL and GLSL. Scalars
 and vectors, storage buffers and uniforms, the control flow in [Control
 flow](./kernels/control-flow.md), the functions in [Built-ins and
-functions](./kernels/builtins.md), barriers, and binding layout you can read
+functions](./kernels/builtins.md), the nested functions in [Your own
+functions](./kernels/functions.md), barriers, and binding layout you can read
 from the host.
 
 That part is tested and is what the rest of this book describes.
 
-## Calling your own functions
+## Sharing a function between kernels
 
-**The gap most likely to affect you.** A kernel body cannot call another
-function, so everything has to be inline. A kernel that would naturally be
-three helpers has to be written as one block.
+A helper declared inside one kernel belongs to that kernel. Two kernels wanting
+the same helper each declare their own copy.
 
-Naga supports functions, and the IR would need a notion of a function
-alongside the entry point. Nothing about this is hard, it just is not done.
+Fixing this needs a surface `#[kernel]` does not have, because a macro attached
+to one function cannot read another one. The likely shape is a module level
+macro wrapping several kernels and their shared helpers at once.
 
 ## Structs in buffers
 
@@ -104,8 +105,8 @@ not there.
 ## How to read this list
 
 Everything here is a gap rather than a decision against. The ones with the
-clearest path are calling your own functions, structs, atomics and workgroup
-memory, since naga already supports all four.
+clearest path are structs, atomics and workgroup memory, since naga already
+supports all three.
 
 If one of these is blocking you, saying so is useful. It is easier to
 prioritise against a real kernel someone is trying to write than against a

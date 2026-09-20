@@ -1,7 +1,7 @@
 # Built-ins and functions
 
-Kernels cannot call your other Rust functions, so everything they can call is
-listed here.
+This is everything Unipute provides. A kernel can also call functions you
+declare inside it, which [Your own functions](./functions.md) covers.
 
 ## Knowing where you are
 
@@ -140,9 +140,6 @@ two three component vectors and gives another one.
 
 ## What you cannot call
 
-Your own functions. A kernel body cannot call another Rust function, even one
-you also marked as a kernel. Everything has to be inline.
-
-This is the limitation most likely to bite on a real kernel, and it is a
-known gap rather than a design choice. See [What is not built
-yet](../roadmap.md).
+A free function declared outside the kernel, including another `#[kernel]`. The
+macro only sees the function it is attached to, so a helper has to be declared
+inside the kernel body. See [Your own functions](./functions.md).

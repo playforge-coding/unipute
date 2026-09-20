@@ -1,6 +1,7 @@
 //! The Rust front end: `syn` syntax in, Unipute IR out.
 
 mod expr;
+mod function;
 mod stmt;
 mod types;
 
@@ -9,18 +10,32 @@ use std::collections::HashMap;
 use unipute_ir as ir;
 
 use crate::attr::KernelAttr;
+use function::Signature;
 use types::param_type;
 
 /// What a name in scope refers to.
 #[derive(Clone)]
 pub enum Binding {
     Local { id: ir::LocalId, ty: ir::Type },
+    Param { id: ir::ParamId, ty: ir::Type },
     Resource { id: ir::ResourceId, ty: ir::Type },
 }
 
-/// Names visible while reading the body, plus the kernel being built.
+/// Names visible while reading one function body, and the locals it declares
+/// as it goes.
 pub struct Scope<'a> {
-    kernel: &'a mut ir::Kernel,
+    /// Resources visible by name.
+    ///
+    /// Empty while reading a helper. A nested `fn` captures nothing in Rust,
+    /// and a shader language only hands bindings to the entry point, so the
+    /// two agree: a helper takes what it needs as a parameter.
+    resources: &'a [ir::Resource],
+    /// Every helper that can be called, indexed by [`ir::FunctionId`].
+    functions: &'a [Signature],
+    /// The helper being read, or `None` in the kernel body.
+    helper: Option<&'a Signature>,
+    /// The locals declared so far by the function being read.
+    locals: Vec<ir::Local>,
     /// One map per nested block, innermost last.
     frames: Vec<HashMap<String, Binding>>,
     /// How deep we are inside loops, so `break` outside one is an error.
@@ -28,10 +43,35 @@ pub struct Scope<'a> {
 }
 
 impl<'a> Scope<'a> {
-    fn new(kernel: &'a mut ir::Kernel) -> Self {
+    fn entry(resources: &'a [ir::Resource], functions: &'a [Signature]) -> Self {
         Self {
-            kernel,
+            resources,
+            functions,
+            helper: None,
+            locals: Vec::new(),
             frames: vec![HashMap::new()],
+            loop_depth: 0,
+        }
+    }
+
+    /// A scope for a helper's body, with its parameters already in it.
+    fn helper(helper: &'a Signature, functions: &'a [Signature]) -> Self {
+        let mut frame = HashMap::new();
+        for (index, param) in helper.params.iter().enumerate() {
+            frame.insert(
+                param.name.clone(),
+                Binding::Param {
+                    id: ir::ParamId(index as u32),
+                    ty: param.ty.clone(),
+                },
+            );
+        }
+        Self {
+            resources: &[],
+            functions,
+            helper: Some(helper),
+            locals: Vec::new(),
+            frames: vec![frame],
             loop_depth: 0,
         }
     }
@@ -44,6 +84,12 @@ impl<'a> Scope<'a> {
             .cloned()
     }
 
+    /// Looks a helper up by name, for a call.
+    fn function_named(&self, name: &str) -> Option<&'a Signature> {
+        let functions: &'a [Signature] = self.functions;
+        functions.iter().find(|signature| signature.name == name)
+    }
+
     fn define(&mut self, name: String, binding: Binding) {
         self.frames
             .last_mut()
@@ -51,10 +97,11 @@ impl<'a> Scope<'a> {
             .insert(name, binding);
     }
 
-    /// Adds a local variable to the kernel and puts its name in scope.
+    /// Adds a local variable to the function being read and puts its name in
+    /// scope.
     fn declare_local(&mut self, name: &str, ty: ir::Type) -> ir::LocalId {
-        let id = ir::LocalId(self.kernel.locals.len() as u32);
-        self.kernel.locals.push(ir::Local {
+        let id = ir::LocalId(self.locals.len() as u32);
+        self.locals.push(ir::Local {
             name: name.to_owned(),
             ty: ty.clone(),
         });
@@ -91,7 +138,13 @@ pub fn kernel(attr: &KernelAttr, function: &syn::ItemFn) -> syn::Result<ir::Kern
         .map(|(resource, _)| resource.clone())
         .collect();
 
-    let mut scope = Scope::new(&mut kernel);
+    // Nested `fn` items become helper functions. Their signatures are read
+    // before any body is, so that two helpers can call each other whichever
+    // order they were written in.
+    let helpers = function::helpers(&function.block)?;
+    kernel.functions = helpers.functions;
+
+    let mut scope = Scope::entry(&kernel.resources, &helpers.signatures);
     for (index, (resource, name)) in resources.iter().enumerate() {
         scope.define(
             name.clone(),
@@ -101,7 +154,8 @@ pub fn kernel(attr: &KernelAttr, function: &syn::ItemFn) -> syn::Result<ir::Kern
             },
         );
     }
-    let body = scope.block(&function.block)?;
+    let body = scope.kernel_body(&function.block)?;
+    kernel.locals = scope.locals;
     kernel.body = body;
 
     Ok(kernel)

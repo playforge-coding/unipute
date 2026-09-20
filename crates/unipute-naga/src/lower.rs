@@ -11,6 +11,13 @@
 //! not be are literals, constants, overrides, zero values, function arguments,
 //! globals and locals. We create every one of those up front, before any emit
 //! range is open, and look them up from a cache while lowering.
+//!
+//! A call's result belongs to that second group as well, and is the awkward
+//! case: naga has no call expression, so [`Statement::Call`] binds its result
+//! to an [`Expression::CallResult`], which cannot be made before the call is
+//! known. Lowering one in the middle of an expression therefore closes the
+//! open emit range, pushes the call, and opens a new range. That is why the
+//! expression lowering carries a block and an emitter around with it.
 
 use std::collections::HashMap;
 
@@ -21,7 +28,8 @@ use crate::error::{Error, Result};
 
 const SPAN: Span = Span::UNDEFINED;
 
-/// Lowers a kernel into a naga module holding a single entry point.
+/// Lowers a kernel into a naga module holding its helper functions and a
+/// single entry point.
 pub fn lower(kernel: &ir::Kernel) -> Result<naga::Module> {
     if !kernel.stage.is_implemented() {
         return Err(Error::UnsupportedStage(kernel.stage));
@@ -32,44 +40,48 @@ pub fn lower(kernel: &ir::Kernel) -> Result<naga::Module> {
 
     let mut module = naga::Module::default();
     let mut types = Types::default();
-
     let globals = lower_resources(kernel, &mut module, &mut types)?;
-    let mut function = naga::Function {
-        name: Some(kernel.name.clone()),
-        ..Default::default()
+
+    let mut shared = Shared {
+        kernel,
+        types,
+        globals,
+        functions: Vec::new(),
     };
+
+    // Helpers come first. `Kernel::functions` is ordered with callees before
+    // callers, so every call already has a handle to name by the time it is
+    // lowered, which is what a shader language without forward declarations
+    // needs.
+    for helper in &kernel.functions {
+        let lowered = shared.lower_function(
+            &mut module.types,
+            Signature {
+                name: helper.name.clone(),
+                arguments: Arguments::Params(&helper.params),
+                result: helper.result.as_ref(),
+            },
+            &helper.locals,
+            &helper.body,
+        )?;
+        let handle = module.functions.append(lowered, SPAN);
+        shared.functions.push(handle);
+    }
 
     // Built-ins become entry point arguments. Only the ones the body actually
     // reads are declared, so the generated shader stays close to what someone
     // would have written by hand.
     let used = used_built_ins(&kernel.body);
-    for built_in in &used {
-        let ty = types.built_in(&mut module.types, *built_in);
-        function.arguments.push(naga::FunctionArgument {
-            name: Some(built_in.intrinsic_name().to_owned()),
-            ty,
-            binding: Some(naga::Binding::BuiltIn(naga_built_in(*built_in))),
-        });
-    }
-
-    let mut ctx = Context {
-        kernel,
-        types: &mut types,
-        module_types: &mut module.types,
-        globals,
-        locals: Vec::new(),
-        built_in_exprs: HashMap::new(),
-        global_exprs: HashMap::new(),
-        literals: HashMap::new(),
-        expressions: core::mem::take(&mut function.expressions),
-        local_variables: core::mem::take(&mut function.local_variables),
-    };
-    ctx.prepare_pre_emit(&used)?;
-    let body = ctx.lower_block(&kernel.body)?;
-
-    function.expressions = ctx.expressions;
-    function.local_variables = ctx.local_variables;
-    function.body = body;
+    let function = shared.lower_function(
+        &mut module.types,
+        Signature {
+            name: kernel.name.clone(),
+            arguments: Arguments::BuiltIns(&used),
+            result: None,
+        },
+        &kernel.locals,
+        &kernel.body,
+    )?;
 
     module.entry_points.push(naga::EntryPoint {
         name: kernel.name.clone(),
@@ -84,6 +96,97 @@ pub fn lower(kernel: &ir::Kernel) -> Result<naga::Module> {
     });
 
     Ok(module)
+}
+
+/// What the function being lowered takes as arguments. This is the one place
+/// the entry point and a helper really differ: the entry point is handed
+/// built-ins by the hardware, a helper is handed its declared parameters.
+enum Arguments<'a> {
+    BuiltIns(&'a [ir::BuiltIn]),
+    Params(&'a [ir::Param]),
+}
+
+/// Everything about a function that is decided before its body is read.
+struct Signature<'a> {
+    name: String,
+    arguments: Arguments<'a>,
+    result: Option<&'a ir::Type>,
+}
+
+/// The parts of the module that every function in it shares.
+struct Shared<'a> {
+    kernel: &'a ir::Kernel,
+    types: Types,
+    globals: Vec<Handle<naga::GlobalVariable>>,
+    /// One handle per entry in `Kernel::functions`, filled in as they are
+    /// lowered. A call looks its target up here.
+    functions: Vec<Handle<naga::Function>>,
+}
+
+impl Shared<'_> {
+    fn lower_function(
+        &mut self,
+        module_types: &mut UniqueArena<naga::Type>,
+        signature: Signature<'_>,
+        locals: &[ir::Local],
+        body: &[ir::Stmt],
+    ) -> Result<naga::Function> {
+        let mut function = naga::Function {
+            name: Some(signature.name),
+            ..Default::default()
+        };
+
+        match &signature.arguments {
+            Arguments::BuiltIns(built_ins) => {
+                for built_in in *built_ins {
+                    let ty = self.types.built_in(module_types, *built_in);
+                    function.arguments.push(naga::FunctionArgument {
+                        name: Some(built_in.intrinsic_name().to_owned()),
+                        ty,
+                        binding: Some(naga::Binding::BuiltIn(naga_built_in(*built_in))),
+                    });
+                }
+            }
+            Arguments::Params(params) => {
+                for param in *params {
+                    let ty = self.types.lower(module_types, &param.ty)?;
+                    function.arguments.push(naga::FunctionArgument {
+                        name: Some(param.name.clone()),
+                        ty,
+                        binding: None,
+                    });
+                }
+            }
+        }
+
+        if let Some(result) = signature.result {
+            let ty = self.types.lower(module_types, result)?;
+            function.result = Some(naga::FunctionResult { ty, binding: None });
+        }
+
+        let mut ctx = Context {
+            kernel: self.kernel,
+            types: &mut self.types,
+            module_types,
+            globals: &self.globals,
+            functions: &self.functions,
+            source_locals: locals,
+            locals: Vec::new(),
+            params: Vec::new(),
+            built_in_exprs: HashMap::new(),
+            global_exprs: HashMap::new(),
+            literals: HashMap::new(),
+            expressions: core::mem::take(&mut function.expressions),
+            local_variables: core::mem::take(&mut function.local_variables),
+        };
+        ctx.prepare_pre_emit(&signature.arguments, body)?;
+        let lowered = ctx.lower_block(body)?;
+
+        function.expressions = ctx.expressions;
+        function.local_variables = ctx.local_variables;
+        function.body = lowered;
+        Ok(function)
+    }
 }
 
 fn lower_resources(
@@ -264,8 +367,28 @@ fn allowed_in_continuing(stmt: &ir::Stmt) -> bool {
             .iter()
             .chain(else_branch)
             .all(allowed_in_continuing),
-        ir::Stmt::While { .. } | ir::Stmt::Break | ir::Stmt::Continue | ir::Stmt::Return => false,
+        // A call is not allowed either. Naga's continuing block takes straight
+        // line code only, and nothing a front end puts in there needs one.
+        ir::Stmt::While { .. }
+        | ir::Stmt::Break
+        | ir::Stmt::Continue
+        | ir::Stmt::Return { .. }
+        | ir::Stmt::Call { .. } => false,
     }
+}
+
+/// Whether an expression produces a value directly rather than naming memory.
+/// Reading a component of one of these is an access on the value, since there
+/// is no pointer to load through.
+fn names_no_memory(expr: &ir::Expr) -> bool {
+    matches!(
+        expr,
+        ir::Expr::BuiltIn(_)
+            | ir::Expr::Param(_)
+            | ir::Expr::Call { .. }
+            | ir::Expr::Compose { .. }
+            | ir::Expr::Math { .. }
+    )
 }
 
 /// Collects the built-ins a body reads, in the order they are first seen.
@@ -314,7 +437,17 @@ fn walk_stmt(stmt: &ir::Stmt, visit: &mut impl FnMut(&ir::Expr)) {
                 walk_stmt(stmt, visit);
             }
         }
-        ir::Stmt::Break | ir::Stmt::Continue | ir::Stmt::Return | ir::Stmt::Barrier(_) => {}
+        ir::Stmt::Call { args, .. } => {
+            for arg in args {
+                walk_expr(arg, visit);
+            }
+        }
+        ir::Stmt::Return { value } => {
+            if let Some(value) = value {
+                walk_expr(value, visit);
+            }
+        }
+        ir::Stmt::Break | ir::Stmt::Continue | ir::Stmt::Barrier(_) => {}
     }
 }
 
@@ -342,8 +475,14 @@ fn walk_expr(expr: &ir::Expr, visit: &mut impl FnMut(&ir::Expr)) {
                 walk_expr(component, visit);
             }
         }
+        ir::Expr::Call { args, .. } => {
+            for arg in args {
+                walk_expr(arg, visit);
+            }
+        }
         ir::Expr::Literal(_)
         | ir::Expr::Local(_)
+        | ir::Expr::Param(_)
         | ir::Expr::Resource(_)
         | ir::Expr::BuiltIn(_)
         | ir::Expr::ArrayLength(_) => {}
@@ -375,9 +514,15 @@ struct Context<'a> {
     kernel: &'a ir::Kernel,
     types: &'a mut Types,
     module_types: &'a mut UniqueArena<naga::Type>,
-    globals: Vec<Handle<naga::GlobalVariable>>,
-    /// One pointer expression per local, in `Kernel::locals` order.
+    globals: &'a [Handle<naga::GlobalVariable>],
+    functions: &'a [Handle<naga::Function>],
+    /// The locals of the function being lowered, in declaration order.
+    source_locals: &'a [ir::Local],
+    /// One pointer expression per local, in the same order.
     locals: Vec<Handle<Expression>>,
+    /// One expression per parameter, for a helper. Empty for the entry point,
+    /// which is handed built-ins instead.
+    params: Vec<Handle<Expression>>,
     built_in_exprs: HashMap<ir::BuiltIn, Handle<Expression>>,
     global_exprs: HashMap<usize, Handle<Expression>>,
     literals: HashMap<LiteralKey, Handle<Expression>>,
@@ -388,12 +533,24 @@ struct Context<'a> {
 impl Context<'_> {
     /// Creates every expression that naga requires to sit outside an emit
     /// range, before the first range opens.
-    fn prepare_pre_emit(&mut self, built_ins: &[ir::BuiltIn]) -> Result<()> {
-        for (index, built_in) in built_ins.iter().enumerate() {
-            let handle = self
-                .expressions
-                .append(Expression::FunctionArgument(index as u32), SPAN);
-            self.built_in_exprs.insert(*built_in, handle);
+    fn prepare_pre_emit(&mut self, arguments: &Arguments<'_>, body: &[ir::Stmt]) -> Result<()> {
+        match arguments {
+            Arguments::BuiltIns(built_ins) => {
+                for (index, built_in) in built_ins.iter().enumerate() {
+                    let handle = self
+                        .expressions
+                        .append(Expression::FunctionArgument(index as u32), SPAN);
+                    self.built_in_exprs.insert(*built_in, handle);
+                }
+            }
+            Arguments::Params(params) => {
+                for index in 0..params.len() {
+                    let handle = self
+                        .expressions
+                        .append(Expression::FunctionArgument(index as u32), SPAN);
+                    self.params.push(handle);
+                }
+            }
         }
 
         for index in 0..self.globals.len() {
@@ -404,7 +561,7 @@ impl Context<'_> {
             self.global_exprs.insert(index, handle);
         }
 
-        for local in &self.kernel.locals {
+        for local in self.source_locals {
             let ty = self.types.lower(self.module_types, &local.ty)?;
             let variable = self.local_variables.append(
                 naga::LocalVariable {
@@ -421,7 +578,7 @@ impl Context<'_> {
         }
 
         let mut literals = Vec::new();
-        for stmt in &self.kernel.body {
+        for stmt in body {
             walk_stmt(stmt, &mut |expr| {
                 if let ir::Expr::Literal(literal) = expr {
                     literals.push(*literal);
@@ -470,30 +627,37 @@ impl Context<'_> {
                     // zero initialises function locals.
                     return Ok(());
                 };
-                let mut emitter = naga::proc::Emitter::default();
-                emitter.start(&self.expressions);
-                let value = self.lower_expr(value)?;
-                block.extend(emitter.finish(&self.expressions));
+                let value = self.lower_value(block, value)?;
                 let pointer = self.local_pointer(*local)?;
                 block.push(Statement::Store { pointer, value }, SPAN);
             }
             ir::Stmt::Store { place, value } => {
                 let mut emitter = naga::proc::Emitter::default();
                 emitter.start(&self.expressions);
-                let pointer = self.lower_place(place)?;
-                let value = self.lower_expr(value)?;
+                let pointer = self.lower_place(block, &mut emitter, place)?;
+                let value = self.lower_expr(block, &mut emitter, value)?;
                 block.extend(emitter.finish(&self.expressions));
                 block.push(Statement::Store { pointer, value }, SPAN);
+            }
+            ir::Stmt::Call { function, args } => {
+                let mut emitter = naga::proc::Emitter::default();
+                emitter.start(&self.expressions);
+                let mut arguments = Vec::with_capacity(args.len());
+                for arg in args {
+                    arguments.push(self.lower_expr(block, &mut emitter, arg)?);
+                }
+                block.extend(emitter.finish(&self.expressions));
+                // A callee that returns a value is still allowed here. Naga
+                // wants the result bound either way, and dropping it on the
+                // floor is what the caller asked for.
+                self.push_call(block, *function, arguments)?;
             }
             ir::Stmt::If {
                 condition,
                 then_branch,
                 else_branch,
             } => {
-                let mut emitter = naga::proc::Emitter::default();
-                emitter.start(&self.expressions);
-                let condition = self.lower_expr(condition)?;
-                block.extend(emitter.finish(&self.expressions));
+                let condition = self.lower_value(block, condition)?;
                 let accept = self.lower_block(then_branch)?;
                 let reject = self.lower_block(else_branch)?;
                 block.push(
@@ -515,7 +679,7 @@ impl Context<'_> {
                 let mut loop_body = Block::new();
                 let mut emitter = naga::proc::Emitter::default();
                 emitter.start(&self.expressions);
-                let condition = self.lower_expr(condition)?;
+                let condition = self.lower_expr(&mut loop_body, &mut emitter, condition)?;
                 let keep_going = self.expressions.append(
                     Expression::Unary {
                         op: naga::UnaryOperator::LogicalNot,
@@ -560,7 +724,13 @@ impl Context<'_> {
             }
             ir::Stmt::Break => block.push(Statement::Break, SPAN),
             ir::Stmt::Continue => block.push(Statement::Continue, SPAN),
-            ir::Stmt::Return => block.push(Statement::Return { value: None }, SPAN),
+            ir::Stmt::Return { value } => {
+                let value = match value {
+                    Some(value) => Some(self.lower_value(block, value)?),
+                    None => None,
+                };
+                block.push(Statement::Return { value }, SPAN);
+            }
             ir::Stmt::Barrier(scope) => {
                 let barrier = match scope {
                     ir::BarrierScope::Workgroup => naga::Barrier::WORK_GROUP,
@@ -572,20 +742,82 @@ impl Context<'_> {
         Ok(())
     }
 
+    /// Lowers an expression that stands on its own, in an emit range of its
+    /// own. Use this where there is a single expression to read; where several
+    /// belong in one range, drive the emitter directly.
+    fn lower_value(&mut self, block: &mut Block, expr: &ir::Expr) -> Result<Handle<Expression>> {
+        let mut emitter = naga::proc::Emitter::default();
+        emitter.start(&self.expressions);
+        let handle = self.lower_expr(block, &mut emitter, expr)?;
+        block.extend(emitter.finish(&self.expressions));
+        Ok(handle)
+    }
+
+    /// Pushes a call statement, handing back the expression holding its result
+    /// when the callee produces one.
+    ///
+    /// The caller must have closed the current emit range first, because
+    /// [`Expression::CallResult`] is one of the expressions naga requires to
+    /// sit outside one.
+    fn push_call(
+        &mut self,
+        block: &mut Block,
+        function: ir::FunctionId,
+        arguments: Vec<Handle<Expression>>,
+    ) -> Result<Option<Handle<Expression>>> {
+        let kernel = self.kernel;
+        let callee = kernel
+            .functions
+            .get(function.0 as usize)
+            .ok_or_else(|| Error::Invalid(format!("function {} is out of range", function.0)))?;
+        if arguments.len() != callee.params.len() {
+            return Err(Error::Invalid(format!(
+                "`{}` takes {} arguments but got {}",
+                callee.name,
+                callee.params.len(),
+                arguments.len()
+            )));
+        }
+        let handle = *self.functions.get(function.0 as usize).ok_or_else(|| {
+            Error::Invalid(format!(
+                "`{}` is called before it is defined, order `Kernel::functions` with callees first",
+                callee.name
+            ))
+        })?;
+        let result = callee.result.is_some().then(|| {
+            self.expressions
+                .append(Expression::CallResult(handle), SPAN)
+        });
+        block.push(
+            Statement::Call {
+                function: handle,
+                arguments,
+                result,
+            },
+            SPAN,
+        );
+        Ok(result)
+    }
+
     /// Lowers an expression used as the destination of a store, producing a
     /// pointer rather than a value.
-    fn lower_place(&mut self, expr: &ir::Expr) -> Result<Handle<Expression>> {
+    fn lower_place(
+        &mut self,
+        block: &mut Block,
+        emitter: &mut naga::proc::Emitter,
+        expr: &ir::Expr,
+    ) -> Result<Handle<Expression>> {
         match expr {
             ir::Expr::Local(local) => self.local_pointer(*local),
             ir::Expr::Index { base, index } => {
-                let base = self.lower_place(base)?;
-                let index = self.lower_expr(index)?;
+                let base = self.lower_place(block, emitter, base)?;
+                let index = self.lower_expr(block, emitter, index)?;
                 Ok(self
                     .expressions
                     .append(Expression::Access { base, index }, SPAN))
             }
             ir::Expr::Component { base, index } => {
-                let base = self.lower_place(base)?;
+                let base = self.lower_place(block, emitter, base)?;
                 Ok(self.expressions.append(
                     Expression::AccessIndex {
                         base,
@@ -595,6 +827,10 @@ impl Context<'_> {
                 ))
             }
             ir::Expr::Resource(resource) => self.global_pointer(*resource),
+            ir::Expr::Param(param) => Err(Error::Invalid(format!(
+                "parameter {} cannot be assigned to",
+                param.0
+            ))),
             other => Err(Error::Invalid(format!("{other:?} cannot be assigned to"))),
         }
     }
@@ -613,7 +849,12 @@ impl Context<'_> {
             .ok_or_else(|| Error::Invalid(format!("resource {} is out of range", resource.0)))
     }
 
-    fn lower_expr(&mut self, expr: &ir::Expr) -> Result<Handle<Expression>> {
+    fn lower_expr(
+        &mut self,
+        block: &mut Block,
+        emitter: &mut naga::proc::Emitter,
+        expr: &ir::Expr,
+    ) -> Result<Handle<Expression>> {
         match expr {
             ir::Expr::Literal(literal) => Ok(self
                 .literals
@@ -623,6 +864,30 @@ impl Context<'_> {
             ir::Expr::Local(local) => {
                 let pointer = self.local_pointer(*local)?;
                 Ok(self.expressions.append(Expression::Load { pointer }, SPAN))
+            }
+            ir::Expr::Param(param) => self
+                .params
+                .get(param.0 as usize)
+                .copied()
+                .ok_or_else(|| Error::Invalid(format!("parameter {} is out of range", param.0))),
+            ir::Expr::Call { function, args } => {
+                let mut arguments = Vec::with_capacity(args.len());
+                for arg in args {
+                    arguments.push(self.lower_expr(block, emitter, arg)?);
+                }
+                // Naga has no call expression: a call is a statement that
+                // binds its result. Close the range so the result lands
+                // outside it, push the call, then open a new range for
+                // whatever reads the result.
+                block.extend(emitter.finish(&self.expressions));
+                let result = self.push_call(block, *function, arguments)?;
+                emitter.start(&self.expressions);
+                result.ok_or_else(|| {
+                    Error::Invalid(format!(
+                        "`{}` returns nothing, so a call to it has no value",
+                        self.kernel.function(*function).name
+                    ))
+                })
             }
             ir::Expr::BuiltIn(built_in) => self
                 .built_in_exprs
@@ -641,26 +906,32 @@ impl Context<'_> {
                 let pointer = self.global_pointer(*resource)?;
                 Ok(self.expressions.append(Expression::Load { pointer }, SPAN))
             }
+            // Reading through an index is normally a pointer followed by a
+            // load. Some bases are plain values rather than memory, though,
+            // and those are read with an access on the value itself.
+            ir::Expr::Component { base, index } if names_no_memory(base) => {
+                let base = self.lower_expr(block, emitter, base)?;
+                Ok(self.expressions.append(
+                    Expression::AccessIndex {
+                        base,
+                        index: u32::from(*index),
+                    },
+                    SPAN,
+                ))
+            }
+            ir::Expr::Index { base, index } if names_no_memory(base) => {
+                let base = self.lower_expr(block, emitter, base)?;
+                let index = self.lower_expr(block, emitter, index)?;
+                Ok(self
+                    .expressions
+                    .append(Expression::Access { base, index }, SPAN))
+            }
             ir::Expr::Index { .. } | ir::Expr::Component { .. } => {
-                // Reading through an index is a pointer followed by a load,
-                // except for built-ins, which are plain values.
-                if let ir::Expr::Component { base, index } = expr
-                    && matches!(**base, ir::Expr::BuiltIn(_))
-                {
-                    let base = self.lower_expr(base)?;
-                    return Ok(self.expressions.append(
-                        Expression::AccessIndex {
-                            base,
-                            index: u32::from(*index),
-                        },
-                        SPAN,
-                    ));
-                }
-                let pointer = self.lower_place(expr)?;
+                let pointer = self.lower_place(block, emitter, expr)?;
                 Ok(self.expressions.append(Expression::Load { pointer }, SPAN))
             }
             ir::Expr::Unary { op, value } => {
-                let expr = self.lower_expr(value)?;
+                let expr = self.lower_expr(block, emitter, value)?;
                 let op = match op {
                     ir::UnaryOp::Negate => naga::UnaryOperator::Negate,
                     ir::UnaryOp::Not => naga::UnaryOperator::LogicalNot,
@@ -670,8 +941,8 @@ impl Context<'_> {
                     .append(Expression::Unary { op, expr }, SPAN))
             }
             ir::Expr::Binary { op, lhs, rhs } => {
-                let left = self.lower_expr(lhs)?;
-                let right = self.lower_expr(rhs)?;
+                let left = self.lower_expr(block, emitter, lhs)?;
+                let right = self.lower_expr(block, emitter, rhs)?;
                 Ok(self.expressions.append(
                     Expression::Binary {
                         op: naga_binary_op(*op),
@@ -682,7 +953,7 @@ impl Context<'_> {
                 ))
             }
             ir::Expr::Cast { value, to } => {
-                let expr = self.lower_expr(value)?;
+                let expr = self.lower_expr(block, emitter, value)?;
                 let scalar = naga_scalar(*to);
                 Ok(self.expressions.append(
                     Expression::As {
@@ -693,7 +964,7 @@ impl Context<'_> {
                     SPAN,
                 ))
             }
-            ir::Expr::Math { function, args } => self.lower_math(*function, args),
+            ir::Expr::Math { function, args } => self.lower_math(block, emitter, *function, args),
             ir::Expr::Compose {
                 size,
                 scalar,
@@ -710,13 +981,17 @@ impl Context<'_> {
                 let ty = self
                     .types
                     .lower(self.module_types, &ir::Type::vector(*size, *scalar))?;
-                let components = components
-                    .iter()
-                    .map(|component| self.lower_expr(component))
-                    .collect::<Result<Vec<_>>>()?;
-                Ok(self
-                    .expressions
-                    .append(Expression::Compose { ty, components }, SPAN))
+                let mut lowered = Vec::with_capacity(components.len());
+                for component in components {
+                    lowered.push(self.lower_expr(block, emitter, component)?);
+                }
+                Ok(self.expressions.append(
+                    Expression::Compose {
+                        ty,
+                        components: lowered,
+                    },
+                    SPAN,
+                ))
             }
             ir::Expr::ArrayLength(resource) => {
                 let global = self.global_pointer(*resource)?;
@@ -729,6 +1004,8 @@ impl Context<'_> {
 
     fn lower_math(
         &mut self,
+        block: &mut Block,
+        emitter: &mut naga::proc::Emitter,
         function: ir::MathFn,
         args: &[ir::Expr],
     ) -> Result<Handle<Expression>> {
@@ -742,7 +1019,7 @@ impl Context<'_> {
         }
         let mut lowered = Vec::with_capacity(args.len());
         for arg in args {
-            lowered.push(self.lower_expr(arg)?);
+            lowered.push(self.lower_expr(block, emitter, arg)?);
         }
         let mut lowered = lowered.into_iter();
         let arg = lowered.next().expect("arity is at least one");

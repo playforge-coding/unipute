@@ -1,0 +1,5 @@
+error: `input` is not a parameter or a local variable of `first`, and a nested function cannot reach the kernel's buffers, so pass it what it needs
+ --> tests/ui/nested_function_reads_a_buffer.rs:6:9
+  |
+6 |         input[0]
+  |         ^^^^^

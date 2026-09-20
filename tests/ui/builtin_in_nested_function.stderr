@@ -1,0 +1,5 @@
+error: `global_id` is only available in the kernel body, so `where_am_i` has to take what it needs as a parameter
+ --> tests/ui/builtin_in_nested_function.rs:6:9
+  |
+6 |         global_id().x
+  |         ^^^^^^^^^

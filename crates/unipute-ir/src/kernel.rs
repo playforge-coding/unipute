@@ -1,6 +1,6 @@
 //! Kernels: the unit of work a back end turns into a shader or a module.
 
-use crate::expr::{LocalId, ResourceId, Stmt};
+use crate::expr::{FunctionId, LocalId, ParamId, ResourceId, Stmt};
 use crate::types::Type;
 
 /// The pipeline stage a kernel runs in.
@@ -57,11 +57,55 @@ pub struct Resource {
     pub access: Access,
 }
 
-/// A variable declared inside the kernel body.
+/// A variable declared inside a function body.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Local {
     pub name: String,
     pub ty: Type,
+}
+
+/// A parameter of a helper function.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Param {
+    pub name: String,
+    pub ty: Type,
+}
+
+/// A helper function the kernel can call.
+///
+/// A helper is an ordinary function: it works on its parameters and locals and
+/// nothing else. It cannot read resources or built-ins, because a shader
+/// language only offers those to the entry point, so anything it needs is
+/// passed in as an argument.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Function {
+    pub name: String,
+    pub params: Vec<Param>,
+    /// The type the function returns, or `None` when it returns nothing.
+    pub result: Option<Type>,
+    pub locals: Vec<Local>,
+    pub body: Vec<Stmt>,
+}
+
+impl Function {
+    /// Starts a function with no parameters, no result and an empty body.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            params: Vec::new(),
+            result: None,
+            locals: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+
+    pub fn local(&self, id: LocalId) -> &Local {
+        &self.locals[id.0 as usize]
+    }
+
+    pub fn param(&self, id: ParamId) -> &Param {
+        &self.params[id.0 as usize]
+    }
 }
 
 /// A complete kernel, ready for a back end to consume.
@@ -72,7 +116,18 @@ pub struct Kernel {
     /// Size of one workgroup. Unused dimensions are `1`.
     pub workgroup_size: [u32; 3],
     pub resources: Vec<Resource>,
+    /// Helper functions, ordered so that a callee always comes before the
+    /// functions that call it.
+    ///
+    /// Back ends rely on that order, since most of them have to emit a
+    /// function before a call to it can name it, and a shader language has no
+    /// forward declarations. It also means recursion cannot be represented,
+    /// which matches every target Unipute generates for. A front end is what
+    /// puts the list in order and reports a cycle to the user.
+    pub functions: Vec<Function>,
+    /// The entry point's own locals.
     pub locals: Vec<Local>,
+    /// The entry point's own body.
     pub body: Vec<Stmt>,
 }
 
@@ -84,6 +139,7 @@ impl Kernel {
             stage: Stage::Compute,
             workgroup_size,
             resources: Vec::new(),
+            functions: Vec::new(),
             locals: Vec::new(),
             body: Vec::new(),
         }
@@ -95,6 +151,10 @@ impl Kernel {
 
     pub fn local(&self, id: LocalId) -> &Local {
         &self.locals[id.0 as usize]
+    }
+
+    pub fn function(&self, id: FunctionId) -> &Function {
+        &self.functions[id.0 as usize]
     }
 
     /// The total number of invocations in one workgroup.

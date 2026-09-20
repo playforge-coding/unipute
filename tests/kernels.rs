@@ -67,6 +67,40 @@ fn skips_odd(input: &[f32], output: &mut [f32]) {
     output[index] = total;
 }
 
+/// Exercises nested `fn` helpers: one calling another, a forward reference,
+/// a vector parameter, a trailing expression as the return value and a helper
+/// that returns nothing.
+#[kernel(workgroup_size(64))]
+fn tonemap(input: &[f32], output: &mut [f32]) {
+    // Declared before the function it calls, which the front end has to sort
+    // out before any of this reaches a back end.
+    fn brightness(color: Vec3<f32>) -> f32 {
+        compress(dot(color, vec3(0.2126, 0.7152, 0.0722)))
+    }
+
+    fn compress(value: f32) -> f32 {
+        if value <= 0.0 {
+            return 0.0;
+        }
+        value / (value + 1.0)
+    }
+
+    fn warm_up(rounds: u32) {
+        let mut spent = 0u32;
+        while spent < rounds {
+            spent += 1u32;
+        }
+    }
+
+    let index = global_id().x * 3u32;
+    if index + 2u32 >= input.len() {
+        return;
+    }
+    warm_up(2u32);
+    let color = vec3(input[index], input[index + 1u32], input[index + 2u32]);
+    output[global_id().x] = brightness(color);
+}
+
 /// Exercises explicit binding placement.
 #[kernel(workgroup_size(1))]
 fn placed(
@@ -160,6 +194,53 @@ fn vectors_casts_and_barriers_survive_the_round_trip() {
     assert!(wgsl.contains("vec3<f32>"), "{wgsl}");
     assert!(wgsl.contains("workgroupBarrier()"), "{wgsl}");
     assert!(wgsl.contains("length("), "{wgsl}");
+}
+
+#[test]
+fn nested_functions_become_shader_functions() {
+    let wgsl = tonemap::WGSL;
+
+    // A callee has to be written before its caller, whichever order the two
+    // were declared in, since a shader language has no forward declarations.
+    let compress = wgsl.find("fn compress(").expect("compress is written");
+    let brightness = wgsl.find("fn brightness(").expect("brightness is written");
+    let entry = wgsl
+        .find("fn tonemap(")
+        .expect("the entry point is written");
+    assert!(compress < brightness, "{wgsl}");
+    assert!(brightness < entry, "{wgsl}");
+
+    assert!(wgsl.contains("fn warm_up(rounds: u32)"), "{wgsl}");
+    assert!(wgsl.contains("warm_up(2u)"), "{wgsl}");
+    // A vector parameter is passed by value, not through a binding.
+    assert!(wgsl.contains("color: vec3<f32>"), "{wgsl}");
+}
+
+#[test]
+fn nested_functions_reach_the_ir() {
+    let ir = tonemap::ir();
+
+    let names: Vec<&str> = ir
+        .functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect();
+    assert_eq!(names, ["compress", "brightness", "warm_up"]);
+
+    let compress = &ir.functions[0];
+    assert_eq!(compress.params.len(), 1);
+    assert_eq!(
+        compress.result,
+        Some(unipute::ir::Type::scalar(unipute::ir::Scalar::F32))
+    );
+    assert_eq!(ir.functions[2].result, None);
+}
+
+#[cfg(feature = "runtime")]
+#[test]
+fn a_kernel_with_helpers_survives_the_runtime_path() {
+    let regenerated = unipute::compile_text(&tonemap::ir(), unipute::Target::Wgsl).unwrap();
+    assert_eq!(regenerated, tonemap::WGSL);
 }
 
 #[test]

@@ -15,6 +15,82 @@ impl Scope<'_> {
         result
     }
 
+    /// Reads the kernel's own body.
+    ///
+    /// The nested `fn` items have already been read into helpers, so they are
+    /// passed over here rather than reported as stray items.
+    pub fn kernel_body(&mut self, block: &syn::Block) -> syn::Result<Vec<ir::Stmt>> {
+        self.push_frame();
+        let mut out = Vec::new();
+        let result = (|| {
+            for stmt in &block.stmts {
+                if matches!(stmt, syn::Stmt::Item(syn::Item::Fn(_))) {
+                    continue;
+                }
+                self.stmt(stmt, &mut out)?;
+            }
+            Ok(())
+        })();
+        self.pop_frame();
+        result.map(|()| out)
+    }
+
+    /// Reads a helper's body, where a trailing expression is the return value
+    /// just as it is in Rust.
+    pub fn function_body(
+        &mut self,
+        block: &syn::Block,
+        result: Option<&ir::Type>,
+    ) -> syn::Result<Vec<ir::Stmt>> {
+        self.push_frame();
+        let out = self.function_statements(&block.stmts, result);
+        self.pop_frame();
+        out
+    }
+
+    fn function_statements(
+        &mut self,
+        stmts: &[syn::Stmt],
+        result: Option<&ir::Type>,
+    ) -> syn::Result<Vec<ir::Stmt>> {
+        let mut out = Vec::new();
+        for (index, stmt) in stmts.iter().enumerate() {
+            let is_last = index + 1 == stmts.len();
+            if is_last && let syn::Stmt::Expr(expr, None) = stmt {
+                self.tail_expr(expr, result, &mut out)?;
+                return Ok(out);
+            }
+            self.stmt(stmt, &mut out)?;
+        }
+        Ok(out)
+    }
+
+    /// Handles the last expression of a helper's body, the one with no
+    /// semicolon after it.
+    fn tail_expr(
+        &mut self,
+        expr: &syn::Expr,
+        result: Option<&ir::Type>,
+        out: &mut Vec<ir::Stmt>,
+    ) -> syn::Result<()> {
+        let Some(ty) = result else {
+            // No result, so this is an ordinary statement that happens to be
+            // written without a semicolon.
+            return self.expr_stmt(expr, out);
+        };
+        if is_block_shaped(expr) {
+            return Err(syn::Error::new_spanned(
+                expr,
+                "a block cannot be used as a value inside a kernel, use `return` in each branch",
+            ));
+        }
+        let value = self.expr(expr, ty.component_scalar())?;
+        out.push(ir::Stmt::Return {
+            value: Some(value.expr),
+        });
+        Ok(())
+    }
+
     fn statements(&mut self, stmts: &[syn::Stmt]) -> syn::Result<Vec<ir::Stmt>> {
         let mut out = Vec::new();
         for stmt in stmts {
@@ -27,9 +103,13 @@ impl Scope<'_> {
         match stmt {
             syn::Stmt::Local(local) => self.let_binding(local, out),
             syn::Stmt::Expr(expr, _) => self.expr_stmt(expr, out),
+            syn::Stmt::Item(syn::Item::Fn(item)) => Err(syn::Error::new_spanned(
+                &item.sig.ident,
+                "a nested `fn` has to be declared at the top level of the kernel body",
+            )),
             syn::Stmt::Item(item) => Err(syn::Error::new_spanned(
                 item,
-                "items cannot be declared inside a kernel",
+                "only `fn` items can be declared inside a kernel",
             )),
             syn::Stmt::Macro(mac) => Err(syn::Error::new_spanned(
                 mac,
@@ -90,16 +170,7 @@ impl Scope<'_> {
                 out.extend(inner);
                 Ok(())
             }
-            syn::Expr::Return(ret) => {
-                if let Some(value) = &ret.expr {
-                    return Err(syn::Error::new_spanned(
-                        value,
-                        "a kernel returns nothing, write results into a `&mut` parameter",
-                    ));
-                }
-                out.push(ir::Stmt::Return);
-                Ok(())
-            }
+            syn::Expr::Return(ret) => self.return_stmt(ret, out),
             syn::Expr::Break(brk) => {
                 if brk.label.is_some() || brk.expr.is_some() {
                     return Err(syn::Error::new_spanned(
@@ -130,6 +201,43 @@ impl Scope<'_> {
         }
     }
 
+    fn return_stmt(&mut self, ret: &syn::ExprReturn, out: &mut Vec<ir::Stmt>) -> syn::Result<()> {
+        let expected = self.helper.and_then(|helper| helper.result.clone());
+        match (&ret.expr, expected) {
+            (Some(value), Some(ty)) => {
+                let value = self.expr(value, ty.component_scalar())?;
+                out.push(ir::Stmt::Return {
+                    value: Some(value.expr),
+                });
+            }
+            (Some(value), None) => {
+                return Err(syn::Error::new_spanned(
+                    value,
+                    match self.helper {
+                        Some(helper) => format!(
+                            "`{}` returns nothing, so `return` cannot take a value",
+                            helper.name
+                        ),
+                        None => "a kernel returns nothing, write results into a `&mut` parameter"
+                            .to_owned(),
+                    },
+                ));
+            }
+            (None, Some(_)) => {
+                let name = &self
+                    .helper
+                    .expect("only a helper can have a result type")
+                    .name;
+                return Err(syn::Error::new_spanned(
+                    ret,
+                    format!("`{name}` returns a value, so `return` needs one"),
+                ));
+            }
+            (None, None) => out.push(ir::Stmt::Return { value: None }),
+        }
+        Ok(())
+    }
+
     fn check_in_loop(&self, node: impl quote::ToTokens, keyword: &str) -> syn::Result<()> {
         if self.loop_depth == 0 {
             return Err(syn::Error::new_spanned(
@@ -140,12 +248,25 @@ impl Scope<'_> {
         Ok(())
     }
 
-    /// Handles the intrinsics that are statements rather than values.
+    /// Handles a call written as a statement: a helper called for its effects,
+    /// or one of the intrinsics that are statements rather than values.
     fn call_stmt(&mut self, call: &syn::ExprCall, out: &mut Vec<ir::Stmt>) -> syn::Result<()> {
         let name = match &*call.func {
             syn::Expr::Path(path) => path.path.get_ident().map(ToString::to_string),
             _ => None,
         };
+
+        if let Some(name) = &name
+            && let Some(signature) = self.function_named(name)
+        {
+            let args = self.call_args(call, signature)?;
+            out.push(ir::Stmt::Call {
+                function: signature.id,
+                args,
+            });
+            return Ok(());
+        }
+
         let scope = match name.as_deref() {
             Some("workgroup_barrier") => ir::BarrierScope::Workgroup,
             Some("storage_barrier") => ir::BarrierScope::Storage,
@@ -210,7 +331,7 @@ impl Scope<'_> {
                         Ok(typed)
                     }
                     ir::Expr::Resource(id) => {
-                        let resource = &self.kernel.resources[id.0 as usize];
+                        let resource = &self.resources[id.0 as usize];
                         if matches!(resource.access, ir::Access::Uniform) {
                             Err(syn::Error::new_spanned(
                                 expr,
@@ -393,6 +514,19 @@ impl Scope<'_> {
         });
         Ok(())
     }
+}
+
+/// Whether an expression is one of the block shaped ones, which Rust allows
+/// to stand as a statement without a semicolon.
+fn is_block_shaped(expr: &syn::Expr) -> bool {
+    matches!(
+        expr,
+        syn::Expr::If(_)
+            | syn::Expr::While(_)
+            | syn::Expr::Loop(_)
+            | syn::Expr::ForLoop(_)
+            | syn::Expr::Block(_)
+    )
 }
 
 /// Pulls the name and optional type annotation out of a binding pattern.

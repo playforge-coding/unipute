@@ -14,6 +14,7 @@ pub fn kernel(kernel: &ir::Kernel) -> TokenStream {
     let name = &kernel.name;
     let [x, y, z] = kernel.workgroup_size;
     let resources = kernel.resources.iter().map(resource);
+    let functions = kernel.functions.iter().map(function);
     let locals = kernel.locals.iter().map(local);
     let body = kernel.body.iter().map(stmt);
 
@@ -21,9 +22,44 @@ pub fn kernel(kernel: &ir::Kernel) -> TokenStream {
         {
             let mut kernel = ::unipute::ir::Kernel::new(#name, [#x, #y, #z]);
             kernel.resources = ::std::vec![#(#resources),*];
+            kernel.functions = ::std::vec![#(#functions),*];
             kernel.locals = ::std::vec![#(#locals),*];
             kernel.body = ::std::vec![#(#body),*];
             kernel
+        }
+    }
+}
+
+fn function(function: &ir::Function) -> TokenStream {
+    let name = &function.name;
+    let params = function.params.iter().map(param);
+    let result = match &function.result {
+        Some(result) => {
+            let result = ty(result);
+            quote!(::std::option::Option::Some(#result))
+        }
+        None => quote!(::std::option::Option::None),
+    };
+    let locals = function.locals.iter().map(local);
+    let body = function.body.iter().map(stmt);
+    quote! {
+        ::unipute::ir::Function {
+            name: ::std::string::ToString::to_string(#name),
+            params: ::std::vec![#(#params),*],
+            result: #result,
+            locals: ::std::vec![#(#locals),*],
+            body: ::std::vec![#(#body),*],
+        }
+    }
+}
+
+fn param(param: &ir::Param) -> TokenStream {
+    let name = &param.name;
+    let ty = ty(&param.ty);
+    quote! {
+        ::unipute::ir::Param {
+            name: ::std::string::ToString::to_string(#name),
+            ty: #ty,
         }
     }
 }
@@ -195,6 +231,20 @@ fn expr(node: &ir::Expr) -> TokenStream {
             let value = literal(*value);
             quote!(::unipute::ir::Expr::Literal(#value))
         }
+        ir::Expr::Param(id) => {
+            let id = id.0;
+            quote!(::unipute::ir::Expr::Param(::unipute::ir::ParamId(#id)))
+        }
+        ir::Expr::Call { function, args } => {
+            let id = function.0;
+            let args = args.iter().map(expr);
+            quote! {
+                ::unipute::ir::Expr::Call {
+                    function: ::unipute::ir::FunctionId(#id),
+                    args: ::std::vec![#(#args),*],
+                }
+            }
+        }
         ir::Expr::Local(id) => {
             let id = id.0;
             quote!(::unipute::ir::Expr::Local(::unipute::ir::LocalId(#id)))
@@ -346,9 +396,28 @@ fn stmt(node: &ir::Stmt) -> TokenStream {
                 }
             }
         }
+        ir::Stmt::Call { function, args } => {
+            let id = function.0;
+            let args = args.iter().map(expr);
+            quote! {
+                ::unipute::ir::Stmt::Call {
+                    function: ::unipute::ir::FunctionId(#id),
+                    args: ::std::vec![#(#args),*],
+                }
+            }
+        }
         ir::Stmt::Break => quote!(::unipute::ir::Stmt::Break),
         ir::Stmt::Continue => quote!(::unipute::ir::Stmt::Continue),
-        ir::Stmt::Return => quote!(::unipute::ir::Stmt::Return),
+        ir::Stmt::Return { value } => {
+            let value = match value {
+                Some(value) => {
+                    let value = expr(value);
+                    quote!(::std::option::Option::Some(#value))
+                }
+                None => quote!(::std::option::Option::None),
+            };
+            quote!(::unipute::ir::Stmt::Return { value: #value })
+        }
         ir::Stmt::Barrier(scope) => {
             let scope = match scope {
                 ir::BarrierScope::Workgroup => quote!(::unipute::ir::BarrierScope::Workgroup),

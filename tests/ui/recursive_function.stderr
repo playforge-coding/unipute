@@ -1,0 +1,5 @@
+error: `steps` calls itself, and a shader function cannot be recursive
+ --> tests/ui/recursive_function.rs:5:8
+  |
+5 |     fn steps(n: u32) -> u32 {
+  |        ^^^^^

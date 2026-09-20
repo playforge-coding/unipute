@@ -147,6 +147,32 @@ and `Vec4<T>`, built with `vec2`, `vec3` and `vec4`, and read with `.x` through
 `for` over a range, `break`, `continue` and `return`. The usual arithmetic,
 comparison, bitwise and shift operators, `as` casts, and indexing.
 
+### Your own functions
+
+A kernel can declare `fn` items in its body and call them. They work like a
+nested `fn` in Rust: they capture nothing, so they take what they need as
+parameters rather than reaching for the kernel's buffers or built-ins.
+
+```rust
+# use unipute::kernel;
+#[kernel(workgroup_size(64))]
+fn tonemap(input: &[f32], output: &mut [f32]) {
+    fn compress(value: f32) -> f32 {
+        value / (value + 1.0)
+    }
+
+    let index = global_id().x;
+    if index >= input.len() {
+        return;
+    }
+    output[index] = compress(input[index]);
+}
+```
+
+Declare them in any order, since Unipute writes them out callee first. No
+shader language has recursion, so a function that calls itself, directly or
+through another, is a compile error.
+
 ### Built-ins
 
 `global_id()`, `local_id()`, `workgroup_id()` and `num_workgroups()` give a

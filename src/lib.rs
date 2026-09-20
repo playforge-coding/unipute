@@ -89,6 +89,7 @@ mod guide {
         Types => "../docs/src/kernels/types.md",
         ControlFlow => "../docs/src/kernels/control-flow.md",
         Builtins => "../docs/src/kernels/builtins.md",
+        Functions => "../docs/src/kernels/functions.md",
         Targets => "../docs/src/output/targets.md",
         Running => "../docs/src/output/running.md",
         Runtime => "../docs/src/output/runtime.md",

@@ -2,13 +2,27 @@
 
 use crate::types::{Scalar, VectorSize};
 
-/// Index of a local variable in [`Kernel::locals`](crate::Kernel::locals).
+/// Index of a local variable in the locals of the function the statement
+/// belongs to, which is [`Kernel::locals`](crate::Kernel::locals) for the entry
+/// point body and [`Function::locals`](crate::Function::locals) for a helper.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LocalId(pub u32);
 
 /// Index of a resource in [`Kernel::resources`](crate::Kernel::resources).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ResourceId(pub u32);
+
+/// Index of a parameter in [`Function::params`](crate::Function::params).
+///
+/// Only meaningful inside a helper function's body. The entry point takes no
+/// parameters of its own: its inputs are resources and built-ins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ParamId(pub u32);
+
+/// Index of a helper function in
+/// [`Kernel::functions`](crate::Kernel::functions).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FunctionId(pub u32);
 
 /// A compile time constant value.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -218,6 +232,8 @@ pub enum Expr {
     Literal(Literal),
     /// Reads a local variable.
     Local(LocalId),
+    /// Reads a parameter of the helper function this expression sits in.
+    Param(ParamId),
     /// Names a resource so it can be indexed.
     Resource(ResourceId),
     /// Reads a hardware provided value.
@@ -255,6 +271,12 @@ pub enum Expr {
         size: VectorSize,
         scalar: Scalar,
         components: Vec<Expr>,
+    },
+    /// Calls a helper function and uses its result. The callee must have a
+    /// [`Function::result`](crate::Function::result).
+    Call {
+        function: FunctionId,
+        args: Vec<Expr>,
     },
     /// `slice.len()` on a runtime sized resource.
     ArrayLength(ResourceId),
@@ -301,8 +323,19 @@ pub enum Stmt {
         /// `Continue` or nested loop.
         continuing: Vec<Stmt>,
     },
+    /// Calls a helper function for its effects. A callee that returns a value
+    /// is still allowed here, and the value is discarded.
+    Call {
+        function: FunctionId,
+        args: Vec<Expr>,
+    },
     Break,
     Continue,
-    Return,
+    /// Leaves the function. `value` is `Some` only in a helper that has a
+    /// [`Function::result`](crate::Function::result), since the entry point
+    /// returns nothing.
+    Return {
+        value: Option<Expr>,
+    },
     Barrier(BarrierScope),
 }

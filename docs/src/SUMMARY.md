@@ -13,6 +13,7 @@
 - [Types](./kernels/types.md)
 - [Control flow](./kernels/control-flow.md)
 - [Built-ins and functions](./kernels/builtins.md)
+- [Your own functions](./kernels/functions.md)
 
 # Using what comes out
 

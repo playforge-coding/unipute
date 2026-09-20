@@ -33,7 +33,7 @@ any particular API's descriptor types.
 
 | Crate | Depends on | Purpose |
 | ----- | ---------- | ------- |
-| `unipute-ir` | nothing | `Kernel`, `Type`, `Expr`, `Stmt`, the `Backend` trait, `Target` |
+| `unipute-ir` | nothing | `Kernel`, `Function`, `Type`, `Expr`, `Stmt`, the `Backend` trait, `Target` |
 | `unipute-macros` | `syn`, `quote`, `unipute-ir`, `unipute-naga` | the `#[kernel]` attribute |
 | `unipute-naga` | `naga`, `unipute-ir` | lowering to naga IR and writing shaders |
 | `unipute` | the three above | the crate users depend on |
@@ -49,13 +49,17 @@ both, as in `spv = ["unipute-macros/spv", "unipute-naga?/spv"]`.
 1. `unipute_macros::kernel` parses the attribute and the function with `syn`.
 2. `parse::kernel` walks the signature into `Resource`s and the body into
    `Stmt`s, resolving names against a scope stack. Untyped integer literals
-   take their type from the other side of the operator they appear in.
+   take their type from the other side of the operator they appear in. Nested
+   `fn` items are read first, since a call has to resolve against a signature
+   whichever order the two were written in.
 3. `unipute_naga::lower` builds a `naga::Module`. Two naga rules shape it:
    expressions must appear before their users, and most expressions have to
    sit inside a `Statement::Emit` range while a specific few must not. The
    ones that must not, which are literals, globals, locals and function
    arguments, are all created before the first emit range opens and looked up
-   from a cache afterwards.
+   from a cache afterwards. A call's result is in that group too, but it
+   cannot be made up front, so a call closes the open range and opens a new
+   one instead. Helpers are lowered before the entry point.
 4. `unipute_naga::validate` runs naga's validator. A failure here means a bug
    in Unipute, not in the user's kernel, so the message is passed through
    as it is.
@@ -162,9 +166,42 @@ pieces most likely to be wanted next, in rough order of value:
   needs a `Type::Struct` variant with explicit layout.
 - Atomics, which naga has as `TypeInner::Atomic` and `Statement::Atomic`.
 - Workgroup shared memory, which needs an address space on locals.
-- Calling other functions, which means the IR growing a notion of a function
-  besides the entry point.
 - Textures and samplers, which mostly matter once graphics stages land.
+
+Calling other functions is done, as nested `fn` items inside a kernel body.
+See [Functions](#functions) below for the shape of it and what is left.
+
+## Functions
+
+A kernel body can declare `fn` items and call them. Three things about the
+design are worth knowing before changing any of it.
+
+**A helper captures nothing.** `ir::Function` has parameters, locals and a
+body, and no access to resources or built-ins. That is not a simplification:
+shader languages hand bindings and built-ins to the entry point, and a function
+called from it cannot ask for them. It also happens to match what a nested `fn`
+means in Rust, so the rule needs no explaining to someone reading a kernel.
+
+**`Kernel::functions` is ordered, callees first.** No shader language has
+forward declarations, so a callee has to be written before its callers. The
+order is an invariant of the IR rather than something each back end works out,
+and the front end is what establishes it. `parse::function::order` reads the
+call graph off the syntax with a `syn::visit::Visit` before any body is parsed,
+which is also where a cycle is caught. Recursion cannot be represented in the
+IR at all, which is right, since no target supports it.
+
+**Naga has no call expression.** `Statement::Call` binds its result to an
+`Expression::CallResult`, and that result is one of the expressions naga
+requires to sit outside an emit range. So lowering a call in the middle of an
+expression means closing the current range, pushing the call statement, and
+opening a new one. That is why `lower_expr` carries a `&mut Block` and a
+`&mut Emitter` rather than just returning a handle.
+
+What is not done: sharing a helper between two kernels. `#[kernel]` is an
+attribute on one function and cannot see its siblings, so this needs a
+different surface, most likely a module level macro wrapping several kernels
+and their shared helpers together. Nothing in the IR would have to change for
+it.
 
 ## Testing
 

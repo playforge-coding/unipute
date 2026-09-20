@@ -10,6 +10,7 @@
 use syn::spanned::Spanned;
 use unipute_ir as ir;
 
+use super::function::Signature;
 use super::types::value_type;
 use super::{Binding, Scope};
 
@@ -138,13 +139,24 @@ impl Scope<'_> {
 
         match self.lookup(&name) {
             Some(Binding::Local { id, ty }) => Ok(Typed::strong(ir::Expr::Local(id), ty)),
+            Some(Binding::Param { id, ty }) => Ok(Typed::strong(ir::Expr::Param(id), ty)),
             // A buffer has no value of its own, but naming it is how you index
             // it, so the array type is passed along for `index` to use.
             Some(Binding::Resource { id, ty }) => Ok(Typed::strong(ir::Expr::Resource(id), ty)),
-            None => Err(syn::Error::new_spanned(
-                path,
-                format!("`{name}` is not a kernel parameter or a local variable"),
-            )),
+            None => Err(syn::Error::new_spanned(path, self.unknown_name(&name))),
+        }
+    }
+
+    /// The message for a name that is not in scope. Inside a helper it says
+    /// why the kernel's buffers are not among the names it could have been.
+    fn unknown_name(&self, name: &str) -> String {
+        match self.helper {
+            Some(helper) => format!(
+                "`{name}` is not a parameter or a local variable of `{}`, and a nested function \
+                 cannot reach the kernel's buffers, so pass it what it needs",
+                helper.name
+            ),
+            None => format!("`{name}` is not a kernel parameter or a local variable"),
         }
     }
 
@@ -355,6 +367,16 @@ impl Scope<'_> {
             .to_string();
 
         if let Some(built_in) = ir::BuiltIn::from_intrinsic_name(&name) {
+            if let Some(helper) = self.helper {
+                return Err(syn::Error::new_spanned(
+                    &call.func,
+                    format!(
+                        "`{name}` is only available in the kernel body, so `{}` has to take what \
+                         it needs as a parameter",
+                        helper.name
+                    ),
+                ));
+            }
             if !call.args.is_empty() {
                 return Err(syn::Error::new_spanned(
                     &call.args,
@@ -376,10 +398,76 @@ impl Scope<'_> {
             return self.math(call, function);
         }
 
+        if let Some(signature) = self.function_named(&name) {
+            return self.user_call(call, signature);
+        }
+
         Err(syn::Error::new_spanned(
             &call.func,
-            format!("`{name}` is not a built-in Unipute provides"),
+            format!("`{name}` is not a built-in Unipute provides, or a `fn` in this kernel"),
         ))
+    }
+
+    /// A call to one of the kernel's own nested functions, used as a value.
+    fn user_call(&mut self, call: &syn::ExprCall, signature: &Signature) -> syn::Result<Typed> {
+        let args = self.call_args(call, signature)?;
+        let Some(result) = signature.result.clone() else {
+            return Err(syn::Error::new_spanned(
+                call,
+                format!(
+                    "`{}` returns nothing, so its call has no value",
+                    signature.name
+                ),
+            ));
+        };
+        Ok(Typed::strong(
+            ir::Expr::Call {
+                function: signature.id,
+                args,
+            },
+            result,
+        ))
+    }
+
+    /// Reads the arguments of a call to a nested function, checking them
+    /// against its parameters.
+    ///
+    /// The types are checked here rather than left to the back end. A mismatch
+    /// that got through would come back as a naga validation failure, which is
+    /// how Unipute reports a bug in itself, not a mistake in a kernel.
+    pub fn call_args(
+        &mut self,
+        call: &syn::ExprCall,
+        signature: &Signature,
+    ) -> syn::Result<Vec<ir::Expr>> {
+        if call.args.len() != signature.params.len() {
+            return Err(syn::Error::new_spanned(
+                call,
+                format!(
+                    "`{}` takes {} arguments but got {}",
+                    signature.name,
+                    signature.params.len(),
+                    call.args.len()
+                ),
+            ));
+        }
+        let mut args = Vec::with_capacity(call.args.len());
+        for (argument, param) in call.args.iter().zip(&signature.params) {
+            let value = self.expr(argument, param.ty.component_scalar())?;
+            if let Some(ty) = &value.ty
+                && ty != &param.ty
+            {
+                return Err(syn::Error::new_spanned(
+                    argument,
+                    format!(
+                        "`{}` takes `{}` for `{}`, but this is `{ty}`",
+                        signature.name, param.ty, param.name
+                    ),
+                ));
+            }
+            args.push(value.expr);
+        }
+        Ok(args)
     }
 
     fn compose(
