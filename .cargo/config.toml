@@ -1,0 +1,12 @@
+# Unipute recompiles naga and a proc macro crate on most clean builds, so a
+# compilation cache pays for itself quickly.
+#
+# If you do not have sccache, either install it with `cargo install sccache` or
+# turn the wrapper off for a command with an empty override:
+#
+#     RUSTC_WRAPPER= cargo build
+#
+# An environment variable always wins over this file, so you can also export
+# that once in your shell.
+[build]
+rustc-wrapper = "sccache"

@@ -1,0 +1,5 @@
+error: `output` is a buffer, assign to one element as in `output[i] = ...`
+ --> tests/ui/assigns_to_whole_buffer.rs:5:5
+  |
+5 |     output = input;
+  |     ^^^^^^

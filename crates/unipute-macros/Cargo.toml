@@ -1,0 +1,25 @@
+[package]
+name = "unipute-macros"
+description = "The #[kernel] attribute macro for Unipute, which generates shaders at compile time"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+unipute-ir = { workspace = true }
+unipute-naga = { workspace = true }
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true, features = ["full"] }
+
+[features]
+default = []
+wgsl = ["unipute-naga/wgsl"]
+spv = ["unipute-naga/spv"]
+msl = ["unipute-naga/msl"]
+hlsl = ["unipute-naga/hlsl"]
+glsl = ["unipute-naga/glsl"]

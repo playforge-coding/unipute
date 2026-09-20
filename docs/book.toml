@@ -1,0 +1,24 @@
+[book]
+title = "Unipute"
+description = "A guide to writing GPU kernels in Rust that compile to any shader language"
+authors = ["playforge-coding"]
+language = "en"
+src = "src"
+
+[output.html]
+# The book is served from https://playforge-coding.github.io/unipute/, so
+# links have to be built with that prefix rather than the domain root.
+site-url = "/unipute/"
+git-repository-url = "https://github.com/playforge-coding/unipute"
+edit-url-template = "https://github.com/playforge-coding/unipute/edit/main/docs/{path}"
+default-theme = "rust"
+preferred-dark-theme = "ayu"
+
+[output.html.playground]
+# The examples need the unipute crate, which the online playground does not
+# have, so the run button would only ever produce a confusing error.
+runnable = false
+
+[output.html.fold]
+enable = true
+level = 1

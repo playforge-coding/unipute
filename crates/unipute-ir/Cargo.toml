@@ -1,0 +1,9 @@
+[package]
+name = "unipute-ir"
+description = "The dependency free intermediate representation shared by Unipute front ends and back ends"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

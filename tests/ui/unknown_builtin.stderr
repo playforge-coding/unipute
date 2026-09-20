@@ -1,0 +1,5 @@
+error: `frobnicate` is not a built-in Unipute provides
+ --> tests/ui/unknown_builtin.rs:5:17
+  |
+5 |     output[0] = frobnicate(1.0);
+  |                 ^^^^^^^^^^

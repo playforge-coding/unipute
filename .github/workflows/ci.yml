@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing should not hide the result on the others.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The UI tests compare against rustc's exact error output, which changes
+      # between toolchain versions. Running them on one platform means a rustc
+      # update shows up as a single failure to look at rather than three.
+      - name: Skip the UI tests away from the primary platform
+        if: matrix.os != 'ubuntu-latest'
+        shell: bash
+        run: echo "UNIPUTE_SKIP_UI_TESTS=1" >> "$GITHUB_ENV"
+
+      - name: Test with every target enabled
+        run: cargo test --workspace --features "spv,msl,hlsl,glsl,runtime"
+
+  lint:
+    name: Format, clippy and docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --features "spv,msl,hlsl,glsl,runtime" -- -D warnings
+
+      # Catches broken intra-doc links, which are easy to introduce and
+      # invisible until someone reads the docs.
+      - name: Build the API docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --features "spv,msl,hlsl,glsl,runtime"
+
+  features:
+    name: Feature combinations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Every target is optional and several items are behind a cfg, so a
+      # combination nobody builds locally is exactly where an unused import or
+      # a dead function hides. Each one has to be warning free, not just
+      # compile.
+      - name: Check each combination builds clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          combinations=(
+            "--no-default-features"
+            "--no-default-features --features wgsl"
+            "--no-default-features --features spv"
+            "--no-default-features --features msl"
+            "--no-default-features --features hlsl"
+            "--no-default-features --features glsl"
+            "--no-default-features --features runtime"
+            ""
+            "--features spv,msl,hlsl,glsl,runtime"
+          )
+          failed=0
+          for flags in "${combinations[@]}"; do
+            echo "::group::${flags:-default features}"
+            if ! cargo clippy --workspace --all-targets $flags -- -D warnings; then
+              echo "::error::failed with ${flags:-default features}"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failed"

@@ -1,0 +1,8 @@
+error: `input` and `output` both use group 0 binding 0, set one with #[binding(...)]
+ --> tests/ui/duplicate_binding.rs:4:1
+  |
+4 | / fn clashing(
+5 | |     #[binding(index = 0)] input: &[f32],
+6 | |     #[binding(index = 0)] output: &mut [f32],
+7 | | ) {
+  | |_^

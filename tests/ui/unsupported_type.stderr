@@ -1,0 +1,5 @@
+error: `String` is not a type Unipute knows, use a scalar or `Vec2`, `Vec3` or `Vec4`
+ --> tests/ui/unsupported_type.rs:4:25
+  |
+4 | fn wrong_type(values: &[String]) {
+  |                         ^^^^^^

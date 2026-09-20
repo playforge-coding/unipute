@@ -1,0 +1,5 @@
+error: a kernel returns nothing, write results into a `&mut` parameter
+ --> tests/ui/returns_a_value.rs:4:33
+  |
+4 | fn gives_back(input: &[f32]) -> f32 {
+  |                                 ^^^

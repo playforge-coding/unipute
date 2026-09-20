@@ -1,0 +1,5 @@
+error: `break` is only allowed inside a loop
+ --> tests/ui/break_outside_loop.rs:6:5
+  |
+6 |     break;
+  |     ^^^^^

@@ -1,0 +1,7 @@
+error: a kernel needs a workgroup size, write #[kernel(workgroup_size(64))]
+ --> tests/ui/missing_workgroup_size.rs:3:1
+  |
+3 | #[kernel]
+  | ^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `kernel` (in Nightly builds, run with -Z macro-backtrace for more info)
