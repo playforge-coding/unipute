@@ -259,6 +259,13 @@ The repository turns on [sccache](https://github.com/mozilla/sccache) in
 If you do not have it, either `cargo install sccache` or prefix a command with
 `RUSTC_WRAPPER=` to turn it off.
 
+That setting applies to CI too, so every job running cargo from inside the
+checkout installs sccache with
+[mozilla-actions/sccache-action](https://github.com/mozilla-actions/sccache-action)
+and stores the cache in the Actions cache. The Stable toolchain job is the
+exception, because it builds from outside the checkout where the cargo config
+does not apply.
+
 ### The guide
 
 The guide in [docs/](docs/) is an mdBook. To work on it:

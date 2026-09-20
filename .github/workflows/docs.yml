@@ -18,6 +18,10 @@ concurrency:
 
 env:
   MDBOOK_VERSION: "0.5.4"
+  # .cargo/config.toml sets sccache as the rustc wrapper, so the job that runs
+  # cargo from inside the checkout has to have it on PATH. This points it at
+  # the Actions cache for its storage.
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   build:
@@ -30,6 +34,8 @@ jobs:
       # pins nightly for the cranelift dev backend.
       - name: Install Rust
         run: rustup show
+
+      - uses: mozilla-actions/sccache-action@v0.0.11
 
       - uses: Swatinem/rust-cache@v2
 
