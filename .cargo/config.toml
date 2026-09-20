@@ -10,3 +10,21 @@
 # that once in your shell.
 [build]
 rustc-wrapper = "sccache"
+
+# Cranelift builds dev binaries faster than LLVM does, which is worth having on
+# a crate that recompiles naga and a proc macro. It is the only reason
+# rust-toolchain.toml pins nightly, and it applies to builds run inside this
+# repository and nowhere else. A crate depending on unipute never sees this
+# file, so none of it reaches users.
+#
+# These two keys are unstable, so a stable cargo run in here fails to read this
+# file at all. That is why they live here rather than in Cargo.toml, where they
+# would break stable builds for everyone depending on the published crate.
+#
+# If cranelift breaks on some edge case, comment both sections out and open an
+# issue on GitHub.
+[unstable]
+codegen-backend = true
+
+[profile.dev]
+codegen-backend = "cranelift"

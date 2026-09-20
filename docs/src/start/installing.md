@@ -60,6 +60,14 @@ each enabled target runs its own writer over every kernel.
 Unipute uses the 2024 edition. Any reasonably current stable toolchain works,
 and there is nothing nightly only in it.
 
+You may notice that Unipute's own repository pins nightly. That is a build speed
+choice for people working on Unipute, not something that reaches you. It turns
+on the cranelift codegen backend for dev builds, which is still unstable, and it
+lives in that repository's cargo config rather than in the published manifest so
+that it stays there. Every part of Unipute you touch, the `#[kernel]` macro, the
+traits, the layout types and the runtime API, is stable Rust. CI builds a crate
+against Unipute on stable on every change to keep that true.
+
 ## Checking it worked
 
 Put this in `src/main.rs`:

@@ -198,12 +198,51 @@ cargo test --workspace --features "spv,msl,hlsl,glsl,runtime"
 cargo fmt --all && cargo clippy --workspace --all-targets
 ```
 
-[.github/workflows/ci.yml](.github/workflows/ci.yml) runs three jobs on every
+### The toolchain
+
+Working on this repository uses nightly, pinned in
+[rust-toolchain.toml](rust-toolchain.toml). Using Unipute does not. The pin is
+there for one reason: `.cargo/config.toml` builds the dev profile with the
+[cranelift](https://github.com/rust-lang/rustc_codegen_cranelift) codegen
+backend, which is faster than LLVM at producing unoptimised binaries, and that
+setting is still unstable. Nothing in the code uses a nightly language or
+library feature.
+
+The rule that follows from that: **everything user facing and everything
+contributor facing has to work on stable.** Kernels, the `#[kernel]` macro, the
+traits, the IR and the runtime API are stable Rust, and so are the tests and the
+examples. Nightly buys build speed and nothing else. If something here ever
+needs a nightly feature to work, that is a design problem rather than a reason
+to reach for the feature.
+
+rustup installs the cranelift component along with the toolchain, since
+`rust-toolchain.toml` lists it, so a fresh checkout needs no setup beyond the
+usual `cargo` command. To add it by hand:
+
+```bash
+rustup component add rustc-codegen-cranelift-preview --toolchain nightly
+```
+
+To build without cranelift, comment out the `[unstable]` and `[profile.dev]`
+sections of `.cargo/config.toml`. Both keys are unstable, so a stable cargo run
+inside the repository refuses to read that file while they are there, and
+commenting them out is what makes `cargo +stable test` work locally. Keeping
+them out of `Cargo.toml` is deliberate: a manifest carrying `cargo-features`
+cannot be parsed by stable cargo at all, which would break every project
+depending on Unipute.
+
+CI runs the pinned nightly for the test, lint and feature jobs, and has a
+separate **Stable toolchain** job that builds a small crate against Unipute from
+outside the checkout, where neither the pin nor the cargo config applies. That
+job is what keeps the promise above honest.
+
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs four jobs on every
 push and pull request:
 
 - **Test** on Linux, macOS and Windows with every target enabled
 - **Format, clippy and docs**, with clippy and rustdoc both at `-D warnings`
 - **Feature combinations**, checking that all nine of them build warning free
+- **Stable toolchain**, building a crate against Unipute on stable
 
 That last one is worth knowing about. Every target is optional and several
 items sit behind a `cfg`, so a combination nobody builds locally is exactly

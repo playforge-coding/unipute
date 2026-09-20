@@ -1,0 +1,10 @@
+# Nightly is a build speed choice for working on this repository, nothing more.
+# The only reason for it is the cranelift codegen backend that .cargo/config.toml
+# turns on for dev builds. No code here uses a nightly language or library
+# feature, and the published crate builds on stable.
+#
+# Listing the component here means rustup installs it along with the toolchain,
+# so a fresh checkout builds without a separate setup step.
+[toolchain]
+channel = "nightly"
+components = ["rustfmt", "clippy", "rustc-codegen-cranelift-preview"]

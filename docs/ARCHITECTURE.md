@@ -178,3 +178,37 @@ pieces most likely to be wanted next, in rough order of value:
 
 When adding a back end or a stage, the first test to write is a lowering test,
 because it fails in a readable way. The macro tests are for the front end.
+
+## Toolchain
+
+`rust-toolchain.toml` pins nightly, and `.cargo/config.toml` builds the dev
+profile with the cranelift codegen backend. That backend is the only reason for
+the pin. It compiles unoptimised binaries faster than LLVM, which is worth
+having on a workspace that rebuilds naga and a proc macro, and the cargo keys
+that select it are unstable.
+
+It is a build speed setting and a constraint at the same time, so treat it as a
+rule rather than a detail:
+
+- **No nightly language or library features anywhere.** Not in the public API,
+  not in the macro, not in tests or examples. Someone on stable has to be able
+  to depend on Unipute and to work on it.
+- **The cranelift keys stay in `.cargo/config.toml`.** They belonged in
+  `Cargo.toml` once, which meant the manifest carried `cargo-features` and
+  stable cargo could not parse it, so every project depending on Unipute broke.
+  A cargo config only applies to commands run inside this repository, so a
+  dependent never sees it.
+- **Nightly is not a capability to build on.** If something seems to need a
+  nightly feature, that is a design problem to solve rather than a feature to
+  reach for.
+
+rustup installs the cranelift component from the toolchain file, so a fresh
+checkout builds as is. To turn cranelift off, comment out the `[unstable]` and
+`[profile.dev]` sections of `.cargo/config.toml`. While they are there a stable
+cargo cannot read that file, so commenting them out is also what lets you run
+`cargo +stable test` locally.
+
+CI runs the pinned nightly for testing and linting, and a separate job builds a
+crate against Unipute on stable from outside the checkout, where neither the pin
+nor the cargo config applies. Anything nightly only that reaches the manifest or
+the code fails there.

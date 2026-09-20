@@ -26,8 +26,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The toolchain and its components come from rust-toolchain.toml, which
+      # pins nightly for the cranelift dev backend.
       - name: Install Rust
-        run: rustup toolchain install stable --profile minimal
+        run: rustup show
 
       - uses: Swatinem/rust-cache@v2
 

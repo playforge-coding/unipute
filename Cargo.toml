@@ -19,19 +19,14 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/playforge-coding/unipute"
 
 [workspace.dependencies]
-unipute-ir = { version = "0.1.0", path = "crates/unipute-ir" }
-unipute-macros = { version = "0.1.0", path = "crates/unipute-macros" }
-# Targets are opted into by feature, so members never inherit the default one.
-unipute-naga = { version = "0.1.0", path = "crates/unipute-naga", default-features = false }
 naga = "30.0.1"
 proc-macro2 = "1.0.107"
 quote = "1.0.42"
 syn = "3.0.6"
-
-[dependencies]
-unipute-ir = { workspace = true }
-unipute-macros = { workspace = true }
-unipute-naga = { workspace = true, optional = true }
+unipute-ir = { version = "0.1.0", path = "crates/unipute-ir" }
+unipute-macros = { version = "0.1.0", path = "crates/unipute-macros" }
+# Targets are opted into by feature, so members never inherit the default one.
+unipute-naga = { version = "0.1.0", path = "crates/unipute-naga", default-features = false }
 
 [features]
 default = ["wgsl"]
@@ -51,6 +46,11 @@ glsl = ["unipute-macros/glsl", "unipute-naga?/glsl"]
 # Translate kernels at run time instead of (or in addition to) compile time.
 runtime = ["dep:unipute-naga"]
 
+[dependencies]
+unipute-ir = { workspace = true }
+unipute-macros = { workspace = true }
+unipute-naga = { workspace = true, optional = true }
+
 [dev-dependencies]
 trybuild = "1.0.121"
 
@@ -59,3 +59,7 @@ trybuild = "1.0.121"
 [[example]]
 name = "emit_shaders"
 required-features = ["wgsl"]
+
+# The cranelift dev backend lives in .cargo/config.toml, not here. Putting it
+# in the manifest would make this crate unparseable on stable cargo, including
+# for anyone depending on it.
