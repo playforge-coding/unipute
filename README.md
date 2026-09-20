@@ -2,7 +2,11 @@
 
 [![CI](https://github.com/playforge-coding/unipute/actions/workflows/ci.yml/badge.svg)](https://github.com/playforge-coding/unipute/actions/workflows/ci.yml)
 [![Documentation](https://github.com/playforge-coding/unipute/actions/workflows/docs.yml/badge.svg)](https://github.com/playforge-coding/unipute/actions/workflows/docs.yml)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
+[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue)](#license)
+[![made-with-rust](https://img.shields.io/badge/Made%20with-Rust-dea584.svg)](https://www.rust-lang.org/)
+[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/playforge-coding/unipute/graphs/commit-activity)
+[![Maintainer](https://img.shields.io/badge/Maintainer-playforge--coding-blue)](https://github.com/playforge-coding)
+
 
 A compile time generating, language and graphics API agnostic GPU library for
 Rust.
