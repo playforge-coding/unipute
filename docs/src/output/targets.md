@@ -112,4 +112,5 @@ cargo run --example emit_shaders --features "spv,msl,hlsl,glsl"
 ```
 
 That is the fastest way to see what a kernel actually becomes, and a good
-sanity check when something is not behaving.
+sanity check when something is not behaving. [Examples](../examples.md) lists
+the others that come with the repository.

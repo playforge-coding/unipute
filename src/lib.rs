@@ -93,6 +93,7 @@ mod guide {
         Targets => "../docs/src/output/targets.md",
         Running => "../docs/src/output/running.md",
         Runtime => "../docs/src/output/runtime.md",
+        Examples => "../docs/src/examples.md",
         HowItWorks => "../docs/src/how-it-works.md",
         Troubleshooting => "../docs/src/troubleshooting.md",
         Roadmap => "../docs/src/roadmap.md",

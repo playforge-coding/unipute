@@ -115,6 +115,10 @@ invocations for 100 elements, and the last 28 have to notice and stop. See
 [Your first kernel](../start/first-kernel.md) if that check is not yet a
 reflex.
 
+The `image_blur` example does this for two dimensions and prints the numbers,
+including how many invocations a 1920x1080 picture wastes. See
+[Examples](../examples.md).
+
 Then dispatch:
 
 ```rust,ignore

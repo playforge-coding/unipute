@@ -20,6 +20,7 @@
 - [Choosing targets](./output/targets.md)
 - [Running a kernel](./output/running.md)
 - [Generating at run time](./output/runtime.md)
+- [Examples](./examples.md)
 
 # Understanding it
 

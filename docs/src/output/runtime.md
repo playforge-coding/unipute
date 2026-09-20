@@ -106,7 +106,9 @@ both ways and comparing the strings, so if the two ever drift apart, that test
 fails.
 
 You can rely on that. Prototyping through the run time path and then switching
-to constants will not change your shaders.
+to constants will not change your shaders. The `retarget` example takes a
+target name on the command line and ends by making that comparison in front of
+you. See [Examples](../examples.md).
 
 ## Inspecting a kernel without the runtime feature
 
@@ -127,4 +129,5 @@ println!("{} resources, {} statements", ir.resources.len(), ir.body.len());
 ```
 
 This is useful for writing your own tooling, and it is the same door a future
-backend would come in through.
+backend would come in through. The `inspect_ir` example walks a whole kernel
+this way, printing its body back out and counting what is in it.

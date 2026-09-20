@@ -110,6 +110,28 @@ To see them all for one kernel:
 cargo run --example emit_shaders --features "spv,msl,hlsl,glsl"
 ```
 
+## Examples
+
+Each file in [examples/](examples/) is about a different part of the job. None
+of them need a GPU, since Unipute stops at the shader.
+
+| Example | Shows |
+| ------- | ----- |
+| `emit_shaders` | one kernel in every target this build has |
+| `image_blur`   | a two dimensional kernel, its layout and its dispatch size |
+| `prefix_sum`   | three kernels and fourteen dispatches for one algorithm |
+| `nbody`        | vector buffers, vector helpers and vector maths |
+| `inspect_ir`   | walking a kernel's IR, the way a new back end would |
+| `retarget`     | choosing a target from the command line at run time |
+
+```bash
+cargo run --example image_blur
+cargo run --example retarget --features "runtime,msl,spv" -- msl spirv
+```
+
+The guide has [a chapter](https://playforge-coding.github.io/unipute/examples.html)
+describing what each one is for.
+
 ## Writing a kernel
 
 ### Parameters

@@ -101,6 +101,23 @@ fn tonemap(input: &[f32], output: &mut [f32]) {
     output[global_id().x] = brightness(color);
 }
 
+/// Exercises a buffer whose elements are vectors, a helper that takes one and
+/// returns another, and multiplying a vector by a scalar.
+#[kernel(workgroup_size(32))]
+fn drift(points: &[Vec4<f32>], output: &mut [Vec4<f32>], step: &f32) {
+    fn advance(point: Vec4<f32>, amount: f32) -> Vec3<f32> {
+        vec3(point.x, point.y, point.z) * amount
+    }
+
+    let index = global_id().x;
+    if index >= points.len() {
+        return;
+    }
+    let point = points[index];
+    let moved = advance(point, step);
+    output[index] = vec4(moved.x, moved.y, moved.z, point.w);
+}
+
 /// Exercises explicit binding placement.
 #[kernel(workgroup_size(1))]
 fn placed(
@@ -214,6 +231,24 @@ fn nested_functions_become_shader_functions() {
     assert!(wgsl.contains("warm_up(2u)"), "{wgsl}");
     // A vector parameter is passed by value, not through a binding.
     assert!(wgsl.contains("color: vec3<f32>"), "{wgsl}");
+}
+
+#[test]
+fn a_buffer_of_vectors_keeps_its_element_type() {
+    let wgsl = drift::WGSL;
+
+    assert!(wgsl.contains("array<vec4<f32>>"), "{wgsl}");
+    // A vector times a scalar keeps the shape of the vector.
+    assert!(wgsl.contains("-> vec3<f32>"), "{wgsl}");
+
+    let ir = drift::ir();
+    assert_eq!(
+        ir.resources[0].ty,
+        unipute::ir::Type::slice(unipute::ir::Type::vector(
+            unipute::ir::VectorSize::Four,
+            unipute::ir::Scalar::F32
+        ))
+    );
 }
 
 #[test]

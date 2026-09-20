@@ -54,11 +54,29 @@ unipute-naga = { workspace = true, optional = true }
 [dev-dependencies]
 trybuild = "1.0.121"
 
-# The example prints WGSL unconditionally, so cargo should leave it out of a
-# build that does not have that writer rather than failing to compile it.
+# Examples that print WGSL unconditionally, so cargo should leave them out of
+# a build that does not have that writer rather than failing to compile them.
+# `inspect_ir` is not listed, since it only reads the IR and needs no writer.
 [[example]]
 name = "emit_shaders"
 required-features = ["wgsl"]
+
+[[example]]
+name = "image_blur"
+required-features = ["wgsl"]
+
+[[example]]
+name = "prefix_sum"
+required-features = ["wgsl"]
+
+[[example]]
+name = "nbody"
+required-features = ["wgsl"]
+
+# This one translates while it runs, which is what the `runtime` feature is.
+[[example]]
+name = "retarget"
+required-features = ["runtime"]
 
 # The cranelift dev backend lives in .cargo/config.toml, not here. Putting it
 # in the manifest would make this crate unparseable on stable cargo, including
