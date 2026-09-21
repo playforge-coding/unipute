@@ -100,8 +100,25 @@ assignments.
 
 ### GLSL
 
-Targets OpenGL ES 3.10, which is the version with compute shaders. Bindings
-become `layout(binding = ...)`.
+Targets OpenGL ES 3.10, which is the first version with compute shaders, and
+which a desktop OpenGL 4.3 or later context also accepts when it has
+`ARB_ES3_1_compatibility`. For a particular desktop version, the `runtime`
+feature gives you `naga_backend::write::glsl_with`, which takes naga's version
+type.
+
+GLSL has no bind groups. Each resource is written with its binding number as
+its `layout(binding = ...)` and the group is dropped, so an OpenGL host binds
+a buffer at `binding.binding` and ignores `binding.group`. The cost is one
+namespace where the kernel had several: once `glsl` is on, two resources in
+different groups cannot share a binding number, and the macro reports the pair
+rather than writing a shader that binds them on top of each other. Give a
+second group's parameters indices that carry on from the first, as in
+`#[binding(group = 1, index = 2)]`.
+
+One more thing if the output is going to wgpu rather than to OpenGL: wgpu
+reads GLSL through naga, and naga's reader only takes desktop profiles 4.40
+and up. Hand it `glsl_with` output for one of those rather than the `GLSL`
+constant. The GPU tests do exactly that.
 
 ## Seeing all of them
 

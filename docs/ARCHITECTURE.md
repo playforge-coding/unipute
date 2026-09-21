@@ -212,6 +212,15 @@ it.
 - `tests/ui/` pins the error messages, since those are most of what a macro's
   users experience. Run with `TRYBUILD=overwrite` to refresh them after
   changing a message on purpose.
+- `tests/gpu.rs` runs kernels on whatever adapter wgpu finds and compares the
+  results with the same computation on the CPU. It is the only place a kernel
+  that is well formed and wrong gets caught. It feeds wgpu the WGSL, SPIR-V
+  and GLSL the crate writes, and the naga module straight out of `lower`, so
+  each of those paths is exercised on a device rather than only through the
+  validator. A machine with no adapter skips it with a note. CI installs a
+  software Vulkan driver on Linux and sets `UNIPUTE_REQUIRE_GPU` there, so a
+  missing adapter is a failure rather than a silent skip. The wgpu glue is
+  `examples/host/mod.rs`, shared with the examples and outside the library.
 
 When adding a back end or a stage, the first test to write is a lowering test,
 because it fails in a readable way. The macro tests are for the front end.

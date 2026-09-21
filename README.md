@@ -112,15 +112,17 @@ cargo run --example emit_shaders --features "spv,msl,hlsl,glsl"
 
 ## Examples
 
-Each file in [examples/](examples/) is about a different part of the job. None
-of them need a GPU, since Unipute stops at the shader.
+Each file in [examples/](examples/) is about a different part of the job.
+Three of them run their kernels on a GPU through wgpu and check the answer
+against the CPU. wgpu is a dev dependency of this repository, not of Unipute,
+and the glue is in [examples/host/mod.rs](examples/host/mod.rs).
 
 | Example | Shows |
 | ------- | ----- |
 | `emit_shaders` | one kernel in every target this build has |
-| `image_blur`   | a two dimensional kernel, its layout and its dispatch size |
+| `image_blur`   | a two dimensional kernel blurring a picture, printed before and after |
 | `prefix_sum`   | three kernels and fourteen dispatches for one algorithm |
-| `nbody`        | vector buffers, vector helpers and vector maths |
+| `nbody`        | vector buffers, vector helpers and vector maths, stepped on the GPU |
 | `inspect_ir`   | walking a kernel's IR, the way a new back end would |
 | `retarget`     | choosing a target from the command line at run time |
 

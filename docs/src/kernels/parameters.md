@@ -93,8 +93,8 @@ When it is not, say so per parameter:
 #[kernel(workgroup_size(64))]
 fn split_across_groups(
     #[binding(group = 0, index = 0)] camera: &f32,
-    #[binding(group = 1, index = 0)] input: &[f32],
-    #[binding(group = 1, index = 1)] output: &mut [f32],
+    #[binding(group = 1, index = 1)] input: &[f32],
+    #[binding(group = 1, index = 2)] output: &mut [f32],
 ) {
     let index = global_id().x;
     if index < input.len() {
@@ -109,6 +109,12 @@ the per frame data in its own group means you swap only that group.
 
 Either part can be left out. `#[binding(group = 1)]` keeps the automatic index
 and only moves the group.
+
+Group 1 above carries on counting from 1 rather than starting again at 0.
+That is for GLSL, which has no groups and so needs every binding number to be
+unique across all of them. Nothing else cares, but if the `glsl` feature is
+ever going to be on, numbering that way from the start saves an edit later.
+[Choosing targets](../output/targets.md#glsl) has the details.
 
 Two parameters landing on the same slot is an error, caught at compile time:
 

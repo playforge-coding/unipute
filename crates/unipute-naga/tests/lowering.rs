@@ -334,6 +334,32 @@ fn a_uniform_slice_is_rejected() {
     assert!(error.to_string().contains("cannot be a slice"), "{error}");
 }
 
+/// GLSL has no groups, so a resource's binding number has to be written out
+/// explicitly or a driver assigns whatever it likes.
+#[cfg(feature = "glsl")]
+#[test]
+fn glsl_writes_each_resource_with_its_binding_number() {
+    let glsl = unipute_naga::compile_glsl(&scale_kernel()).unwrap();
+    assert!(glsl.contains("binding = 0)"), "{glsl}");
+    assert!(glsl.contains("binding = 1)"), "{glsl}");
+
+    // Group 1, binding 3: the group goes, the number stays.
+    let glsl = unipute_naga::compile_glsl(&accumulate_kernel()).unwrap();
+    assert!(glsl.contains("binding = 3)"), "{glsl}");
+}
+
+#[cfg(feature = "glsl")]
+#[test]
+fn glsl_rejects_a_binding_number_shared_across_groups() {
+    let mut kernel = scale_kernel();
+    kernel.resources[1].group = 1;
+    kernel.resources[1].binding = 0;
+
+    let error = unipute_naga::compile_glsl(&kernel).unwrap_err();
+    assert!(error.to_string().contains("both use binding 0"), "{error}");
+    assert!(error.to_string().contains("`input`"), "{error}");
+}
+
 #[test]
 #[ignore = "prints generated shaders for eyeballing"]
 fn dump() {

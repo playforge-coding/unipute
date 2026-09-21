@@ -1,14 +1,21 @@
-//! A two dimensional kernel, and the host side arithmetic that goes with one.
+//! A two dimensional kernel, run over a picture you can see.
 //!
-//! The kernel blurs a single channel image. Around it is everything a host has
-//! to work out before it can dispatch: where each buffer is bound, and how many
-//! workgroups cover the picture.
+//! The kernel blurs a single channel image. The host works out how many
+//! workgroups cover it, runs the blur on a GPU through wgpu, prints the
+//! picture before and after, and checks the result against the same filter
+//! written as two plain loops.
 //!
 //! ```text
 //! cargo run --example image_blur
 //! ```
+//!
+//! The wgpu side is in `examples/host/mod.rs`. It is not part of Unipute.
 
-use unipute::{Access, Kernel, WgslKernel, kernel};
+mod host;
+
+use std::process::ExitCode;
+
+use unipute::{Kernel, kernel};
 
 /// Blurs an image with a 3x3 tent filter, then mixes the result back over the
 /// original by `strength`.
@@ -63,53 +70,117 @@ fn blur(input: &[f32], output: &mut [f32], width: &u32, height: &u32, strength: 
     output[index] = mix(input[index], total / total_weight, strength);
 }
 
-/// A picture to plan a dispatch for.
-const IMAGE: [u32; 2] = [1920, 1080];
+/// The picture: small enough to print, and with a hard edge and a single
+/// bright pixel so the blur has something to show.
+const WIDTH: u32 = 40;
+const HEIGHT: u32 = 12;
 
-fn main() {
-    println!("kernel `{}`", blur::NAME);
-    println!("workgroup size {:?}", blur::WORKGROUP_SIZE);
+fn main() -> ExitCode {
+    let Some(gpu) = host::Gpu::open() else {
+        eprintln!("no GPU adapter found, so there is nothing to run this on");
+        return ExitCode::FAILURE;
+    };
+    println!("running on {}", gpu.describe());
+
+    let image = picture();
+    let strength = 1.0f32;
+
+    let pipeline = gpu.pipeline::<blur>();
+    let input = gpu.storage(&image);
+    let output = gpu.storage(&vec![0.0f32; image.len()]);
+    let width = gpu.uniform(&WIDTH);
+    let height = gpu.uniform(&HEIGHT);
+    let strength_buffer = gpu.uniform(&strength);
+
+    // Neither axis is a multiple of 16, so the last group along each one has
+    // invocations that land outside the image and return early.
+    let groups = host::workgroups([WIDTH, HEIGHT, 1], blur::WORKGROUP_SIZE);
+    let invocations = groups[0] * groups[1] * blur::WORKGROUP_SIZE[0] * blur::WORKGROUP_SIZE[1];
+    println!(
+        "{WIDTH}x{HEIGHT} image, {groups:?} workgroups, {} of {invocations} invocations do nothing",
+        invocations - WIDTH * HEIGHT
+    );
     println!();
 
-    print_layout();
+    gpu.dispatch(
+        &pipeline,
+        &[&input, &output, &width, &height, &strength_buffer],
+        groups,
+    );
+    let blurred = gpu.read::<f32>(&output);
+
+    println!("before");
+    print_picture(&image);
     println!();
-    print_dispatch();
+    println!("after");
+    print_picture(&blurred);
     println!();
 
-    println!("--- WGSL ---");
-    println!("{}", blur::WGSL);
-}
+    let expected = blur_on_the_cpu(&image, strength);
+    let difference = blurred
+        .iter()
+        .zip(&expected)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    println!("largest difference from the CPU blur: {difference:e}");
 
-/// Prints what the host has to bind, read off the kernel rather than written
-/// out by hand a second time.
-fn print_layout() {
-    println!("layout");
-    for binding in blur::BINDINGS {
-        let kind = match binding.access {
-            Access::Read => "storage, read only",
-            Access::ReadWrite => "storage, read and write",
-            Access::Uniform => "uniform",
-        };
-        println!(
-            "  group {} binding {}: {:<8} {kind}",
-            binding.group, binding.binding, binding.name
-        );
+    if difference < 1e-5 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }
 
-/// Prints the dispatch this kernel needs for [`IMAGE`].
-fn print_dispatch() {
-    let [width, height] = IMAGE;
-    let size = blur::WORKGROUP_SIZE;
-    let groups = [width.div_ceil(size[0]), height.div_ceil(size[1]), 1];
-    let invocations = groups[0] * groups[1] * size[0] * size[1];
-    let pixels = width * height;
+/// A dark field with a bright block in it and one lone bright pixel.
+fn picture() -> Vec<f32> {
+    let mut image = vec![0.0f32; (WIDTH * HEIGHT) as usize];
+    for y in 3..9 {
+        for x in 6..18 {
+            image[(y * WIDTH + x) as usize] = 1.0;
+        }
+    }
+    image[(6 * WIDTH + 30) as usize] = 1.0;
+    image
+}
 
-    println!("dispatch for a {width}x{height} image");
-    println!("  workgroups {groups:?}");
-    println!("  invocations {invocations}, pixels {pixels}");
-    println!(
-        "  {} invocations land outside the image and return early",
-        invocations - pixels
-    );
+/// The filter again, as the loops the kernel is a rearrangement of.
+fn blur_on_the_cpu(image: &[f32], strength: f32) -> Vec<f32> {
+    let (width, height) = (WIDTH as i64, HEIGHT as i64);
+    let at = |x: i64, y: i64| {
+        let x = x.clamp(0, width - 1);
+        let y = y.clamp(0, height - 1);
+        image[(y * width + x) as usize]
+    };
+    let mut output = Vec::with_capacity(image.len());
+    for y in 0..height {
+        for x in 0..width {
+            let mut total = 0.0;
+            let mut total_weight = 0.0;
+            for dy in -1i64..=1 {
+                for dx in -1i64..=1 {
+                    let weight = (2 - dx.abs()) as f32 * (2 - dy.abs()) as f32;
+                    total += at(x + dx, y + dy) * weight;
+                    total_weight += weight;
+                }
+            }
+            let original = at(x, y);
+            output.push(original + (total / total_weight - original) * strength);
+        }
+    }
+    output
+}
+
+/// Brightness as characters, so the blur is something to look at.
+fn print_picture(image: &[f32]) {
+    const RAMP: &[u8] = b" .:-=+*#%@";
+    for row in image.chunks(WIDTH as usize) {
+        let line: String = row
+            .iter()
+            .map(|value| {
+                let level = (value.clamp(0.0, 1.0) * (RAMP.len() - 1) as f32).round() as usize;
+                RAMP[level] as char
+            })
+            .collect();
+        println!("  {line}");
+    }
 }

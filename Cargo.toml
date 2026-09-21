@@ -51,12 +51,35 @@ unipute-ir = { workspace = true }
 unipute-macros = { workspace = true }
 unipute-naga = { workspace = true, optional = true }
 
+# The examples and the GPU tests run kernels through wgpu. It is a dev
+# dependency only: the library itself still brings no graphics API with it.
+#
+# wgpu is pinned to the same major version as naga, since the `naga-ir` input
+# hands it a module built by unipute-naga, and the two have to be the same
+# naga for the types to match. `spirv` and `glsl` let the tests feed wgpu the
+# other targets this crate generates, so each writer is exercised on a GPU
+# rather than only through the validator.
 [dev-dependencies]
+pollster = "1.0.1"
 trybuild = "1.0.121"
+wgpu = { version = "30.0.1", default-features = false, features = [
+    "std",
+    "parking_lot",
+    "dx12",
+    "metal",
+    "gles",
+    "vulkan",
+    "wgsl",
+    "spirv",
+    "glsl",
+    "naga-ir",
+] }
+zerocopy = { version = "0.8.57", features = ["derive"] }
 
-# Examples that print WGSL unconditionally, so cargo should leave them out of
-# a build that does not have that writer rather than failing to compile them.
-# `inspect_ir` is not listed, since it only reads the IR and needs no writer.
+# Examples that read the WGSL constant, whether to print it or to run it, so
+# cargo should leave them out of a build that does not have that writer rather
+# than failing to compile them. `inspect_ir` is not listed, since it only
+# reads the IR and needs no writer.
 [[example]]
 name = "emit_shaders"
 required-features = ["wgsl"]

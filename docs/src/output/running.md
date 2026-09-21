@@ -3,10 +3,12 @@
 Unipute stops at the shader. Getting it onto a GPU is your graphics API's job.
 This chapter shows how the two meet.
 
-> The code here is sketched against wgpu to show the shape of it. Graphics
-> APIs change their signatures often, so treat it as a guide to which pieces
-> line up rather than something to paste. The Unipute side, which is the part
-> this book can promise, is the constants.
+> The code here is sketched against wgpu to show the shape of it. The full
+> version, which the examples and the GPU tests run through, is
+> [`examples/host/mod.rs`](https://github.com/playforge-coding/unipute/blob/main/examples/host/mod.rs)
+> in the repository. Graphics APIs change their signatures often, so if the
+> two ever disagree, the file is the one that compiles. The Unipute side,
+> which is the part this book can promise, is the constants.
 
 ## What a kernel gives the host
 
@@ -147,7 +149,9 @@ group and binding numbers, so read them from Metal's reflection instead of
 `register` assignments.
 
 **OpenGL.** Enable `glsl` and compile `GLSL` as a compute shader. Bindings
-appear as `layout(binding = ...)`.
+appear as `layout(binding = ...)`, and since GLSL has no groups the binding
+number is the whole address. [Choosing targets](./targets.md#glsl) has the
+rule that follows from that.
 
 ## Compiling shaders ahead of time
 

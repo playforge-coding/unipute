@@ -133,12 +133,31 @@ pub fn hlsl(validated: &Validated) -> Result<String> {
     Ok(output)
 }
 
+/// Writes GLSL for OpenGL ES 3.10, the first version with compute shaders.
+///
+/// That profile also loads on a desktop OpenGL 4.3 or later context that has
+/// `ARB_ES3_1_compatibility`, which most do. For a specific desktop version,
+/// use [`glsl_with`].
 #[cfg(feature = "glsl")]
 pub fn glsl(validated: &Validated) -> Result<String> {
+    glsl_with(validated, naga::back::glsl::Version::new_gles(310))
+}
+
+/// Writes GLSL for a particular version and profile.
+///
+/// The `version` is naga's own type, so anything naga's GLSL writer can
+/// produce can be asked for here. Compute shaders need OpenGL ES 3.10 or
+/// desktop OpenGL 4.30 at the least, and naga refuses an older one.
+#[cfg(feature = "glsl")]
+pub fn glsl_with(validated: &Validated, version: naga::back::glsl::Version) -> Result<String> {
     use naga::back::glsl;
 
     let entry_point = entry_point_name(validated)?;
-    let options = glsl::Options::default();
+    let options = glsl::Options {
+        version,
+        binding_map: glsl_binding_map(&validated.module)?,
+        ..Default::default()
+    };
     let pipeline_options = glsl::PipelineOptions {
         shader_stage: naga::ShaderStage::Compute,
         entry_point,
@@ -158,6 +177,45 @@ pub fn glsl(validated: &Validated) -> Result<String> {
         .write()
         .map_err(|error| write_error(Target::Glsl, error))?;
     Ok(output)
+}
+
+/// Gives every resource its GLSL binding number.
+///
+/// GLSL has no bind groups. A buffer or uniform block carries one
+/// `binding = N`, and without it the driver picks a slot and the host is left
+/// looking slots up by block name, which naga generates. A GLSL front end such
+/// as wgpu's refuses a block with no binding at all. So each resource is
+/// written with its own binding number and the group is dropped.
+///
+/// That leaves one namespace where the kernel had several, so two resources
+/// in different groups that share a binding number would land on top of each
+/// other. That is reported rather than written, since the fix is a different
+/// `index` on one of them.
+#[cfg(feature = "glsl")]
+fn glsl_binding_map(module: &naga::Module) -> Result<naga::back::glsl::BindingMap> {
+    let mut map = naga::back::glsl::BindingMap::default();
+    let mut taken = std::collections::BTreeMap::new();
+    for (_, global) in module.global_variables.iter() {
+        let Some(resource) = global.binding.as_ref() else {
+            continue;
+        };
+        let name = global.name.as_deref().unwrap_or("an unnamed resource");
+        if let Some(other) = taken.insert(resource.binding, name) {
+            return Err(Error::Invalid(format!(
+                "GLSL has no bind groups, so every resource needs its own binding number, \
+                 but `{other}` and `{name}` both use binding {}",
+                resource.binding
+            )));
+        }
+        let slot = u8::try_from(resource.binding).map_err(|_| {
+            Error::Invalid(format!(
+                "GLSL binding numbers stop at 255, and `{name}` uses {}",
+                resource.binding
+            ))
+        })?;
+        map.insert(*resource, slot);
+    }
+    Ok(map)
 }
 
 #[cfg(any(feature = "msl", feature = "hlsl", feature = "glsl"))]

@@ -51,6 +51,18 @@ jobs:
         shell: bash
         run: echo "UNIPUTE_SKIP_UI_TESTS=1" >> "$GITHUB_ENV"
 
+      # The GPU tests need an adapter. The Linux runner has no GPU, so this
+      # installs Mesa's software Vulkan driver and then insists the tests run
+      # rather than skip, so a broken driver setup shows up as a failure. The
+      # macOS and Windows runners use what they have, Metal and WARP under
+      # DirectX 12, and skip the GPU tests if wgpu finds nothing.
+      - name: Install a software Vulkan driver
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers
+          echo "UNIPUTE_REQUIRE_GPU=1" >> "$GITHUB_ENV"
+
       - name: Test with every target enabled
         run: cargo test --workspace --features "spv,msl,hlsl,glsl,runtime"
 

@@ -2,11 +2,18 @@
 
 The repository has a set of runnable examples in
 [`examples/`](https://github.com/playforge-coding/unipute/tree/main/examples).
-Each one is a single file, and each one is about a different part of the job,
-so between them they cover most of what this book describes.
+Each one is about a different part of the job, so between them they cover most
+of what this book describes.
 
-None of them need a GPU. Unipute stops at the shader, so an example prints what
-it generated rather than running it.
+Three of them run their kernels on a GPU and check the answer. Unipute stops at
+the shader, so the wgpu code that takes it from there lives in
+[`examples/host/mod.rs`](https://github.com/playforge-coding/unipute/blob/main/examples/host/mod.rs),
+shared by those examples and by the GPU tests. It is the [Running a
+kernel](./output/running.md) chapter written out in full, and it is not part
+of the library: wgpu is a dev dependency of the repository, not of Unipute. An
+example that needs a device says so and exits if the machine has none.
+
+The other three never touch a device. They print what a kernel becomes.
 
 ## emit_shaders
 
@@ -21,18 +28,18 @@ when a shader is not behaving.
 
 ## image_blur
 
-A two dimensional kernel, and the arithmetic a host does around one.
+A two dimensional kernel, run over a picture you can see.
 
 ```bash
 cargo run --example image_blur
 ```
 
-A 3x3 blur over a flat image buffer, with taps clamped to the edge. Around it,
-the two things a host has to get right: the layout, read out of `BINDINGS`
-rather than written a second time by hand, and the workgroup count for a
-1920x1080 picture, including how many invocations land outside it and return
-early. See [Running a kernel](./output/running.md) for the same arithmetic in
-prose.
+A 3x3 blur over a flat image buffer, with taps clamped to the edge. The host
+works out the workgroup count for a 40x12 picture, including how many
+invocations land outside it and return early, runs the blur, prints the
+picture before and after as characters, and checks the result against the
+same filter written as two plain loops. See [Running a
+kernel](./output/running.md) for the dispatch arithmetic in prose.
 
 ## prefix_sum
 
@@ -44,9 +51,11 @@ cargo run --example prefix_sum
 
 A prefix sum needs every element to know the sum of the ones before it, which
 no single pass can do. This is three kernels and fourteen dispatches, ping
-ponging between two buffers. It also shows what a second bind group is for: the
-step size is the only thing that changes between passes, so it is bound on its
-own and group 0 is bound once.
+ponging between two buffers, with the three results compared against a
+running total on the CPU at the end. It also shows what a second bind group
+is for: the step size is the only thing that changes between passes, so it is
+bound on its own and group 0 is bound once. The step takes binding index 2
+rather than 0, which is the [GLSL rule](./output/targets.md#glsl) at work.
 
 ## nbody
 
@@ -56,10 +65,13 @@ Vector types from one end to the other.
 cargo run --example nbody
 ```
 
-One step of a direct n-body simulation. Buffers of `Vec4<f32>`, a helper that
-takes vectors and returns one, and `dot` and `inverse_sqrt` doing the work.
-Packing position and mass into one `Vec4` is the sort of thing that matters in
-a kernel that reads every body once per invocation.
+A direct n-body simulation, run for twenty steps. Buffers of `Vec4<f32>`, a
+helper that takes vectors and returns one, and `dot` and `inverse_sqrt` doing
+the work. The first step is checked against the same maths on the CPU, and the
+total momentum is printed as the simulation goes, since every pull has an
+equal and opposite one and the physics says it should not change. Packing
+position and mass into one `Vec4` is the sort of thing that matters in a
+kernel that reads every body once per invocation.
 
 ## inspect_ir
 
