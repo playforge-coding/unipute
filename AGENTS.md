@@ -34,7 +34,15 @@ The CI job named "Stable toolchain" builds a crate against Unipute on stable and
 
 ## Outdated packages
 
-PLEASE, PLEASE do not use a package that is old or deprecated.
+PLEASE, PLEASE do not use a package that is old or deprecated. When possible use the latest version.
+
+## Bump
+
+Bump the crate versions when needed.
+
+## Wrappers
+
+Prefer to use crates like [`zerocopy`](https://github.com/google/zerocopy) for memory management instead of `unsafe` when applicable.
 
 ## Keep things human
 
