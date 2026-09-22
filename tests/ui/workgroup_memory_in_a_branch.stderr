@@ -1,0 +1,5 @@
+error: workgroup memory is declared at the top level of the kernel body, not inside a block
+ --> tests/ui/workgroup_memory_in_a_branch.rs:7:13
+  |
+7 |         let tile: [f32; 64];
+  |             ^^^^^^^^^^^^^^^

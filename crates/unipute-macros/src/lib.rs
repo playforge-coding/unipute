@@ -51,6 +51,34 @@ use syn::parse_macro_input;
 /// slice. The built-ins are `global_id`, `local_id`, `local_index`,
 /// `workgroup_id`, `num_workgroups`, `workgroup_barrier`, `storage_barrier`,
 /// the `vec2` through `vec4` constructors, and the usual numeric functions.
+///
+/// # Workgroup memory
+///
+/// A `let` marked `#[workgroup]` at the top level of the body declares memory
+/// shared by every invocation in a workgroup rather than a local of one
+/// invocation. It takes a type and no value, and the type may be a fixed
+/// length array:
+///
+/// ```ignore
+/// #[kernel(workgroup_size(64))]
+/// fn block_sum(input: &[f32], output: &mut [f32]) {
+///     #[workgroup]
+///     let tile: [f32; 64];
+///
+///     let lane = local_index();
+///     tile[lane] = input[global_id().x];
+///     workgroup_barrier();
+///     if lane == 0u32 {
+///         let mut total = 0.0;
+///         for i in 0..tile.len() {
+///             total += tile[i];
+///         }
+///         output[workgroup_id().x] = total;
+///     }
+/// }
+/// ```
+///
+/// The host never sees it, so it has no binding and is not in `BINDINGS`.
 #[proc_macro_attribute]
 pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = parse_macro_input!(attr as attr::KernelAttr);

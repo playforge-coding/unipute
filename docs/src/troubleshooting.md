@@ -107,6 +107,15 @@ wholesale, so assign per element inside a loop or per invocation.
 Uniforms are read only. If you need to write, take the parameter as
 `&mut [T]`.
 
+### `workgroup memory is declared at the top level of the kernel body, not inside a block`
+
+`#[workgroup] let` goes at the top of the kernel body, next to any nested
+`fn` items, not inside an `if` or a loop. It exists for the whole kernel
+either way, so the top level is the only place that says so. A nested `fn`
+cannot declare it either, for the reason [Your own
+functions](./kernels/functions.md) gives. See [Workgroup
+memory](./kernels/workgroup-memory.md).
+
 ## Indices and types
 
 ### `X cannot be indexed`
@@ -211,6 +220,12 @@ fn guarded(input: &[f32], output: &mut [f32]) {
 **A barrier inside a branch.** Every invocation in a workgroup has to reach the
 same barrier. Unipute does not check this yet. Keep barriers at the top level
 of the body.
+
+**An early `return` before a barrier.** The same mistake in another shape. The
+invocations past the end of the input leave, and the rest of the group waits
+at the barrier for invocations that are never coming. Guard the work with an
+`if` instead and let every invocation reach the barrier. [Workgroup
+memory](./kernels/workgroup-memory.md) shows the pattern.
 
 **A `Vec3` taking four slots.** Three component vectors are padded to the size
 of four in a buffer. Your host side allocation has to agree, or everything

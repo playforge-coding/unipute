@@ -1,6 +1,6 @@
 //! Kernels: the unit of work a back end turns into a shader or a module.
 
-use crate::expr::{FunctionId, LocalId, ParamId, ResourceId, Stmt};
+use crate::expr::{FunctionId, LocalId, ParamId, ResourceId, SharedId, Stmt};
 use crate::types::Type;
 
 /// The pipeline stage a kernel runs in.
@@ -55,6 +55,22 @@ pub struct Resource {
     pub binding: u32,
     pub ty: Type,
     pub access: Access,
+}
+
+/// Memory shared by every invocation in one workgroup.
+///
+/// It exists for as long as the workgroup runs and is visible to nothing
+/// outside it. The host never sees it, so it has no binding and no place in
+/// the layout. A write by one invocation reaches the others only after a
+/// [`Stmt::Barrier`] with [`BarrierScope::Workgroup`](crate::BarrierScope),
+/// which is what that barrier is for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shared {
+    pub name: String,
+    /// A scalar, a vector, or a fixed length array of either, nested as deep
+    /// as needed. Never a runtime sized array, since the memory is laid out
+    /// before the workgroup starts.
+    pub ty: Type,
 }
 
 /// A variable declared inside a function body.
@@ -116,6 +132,10 @@ pub struct Kernel {
     /// Size of one workgroup. Unused dimensions are `1`.
     pub workgroup_size: [u32; 3],
     pub resources: Vec<Resource>,
+    /// Workgroup shared memory. Only the entry point body reaches it, for the
+    /// same reason only the entry point reaches resources: a shader language
+    /// hands neither to a function called from it.
+    pub shared: Vec<Shared>,
     /// Helper functions, ordered so that a callee always comes before the
     /// functions that call it.
     ///
@@ -139,6 +159,7 @@ impl Kernel {
             stage: Stage::Compute,
             workgroup_size,
             resources: Vec::new(),
+            shared: Vec::new(),
             functions: Vec::new(),
             locals: Vec::new(),
             body: Vec::new(),
@@ -147,6 +168,10 @@ impl Kernel {
 
     pub fn resource(&self, id: ResourceId) -> &Resource {
         &self.resources[id.0 as usize]
+    }
+
+    pub fn shared(&self, id: SharedId) -> &Shared {
+        &self.shared[id.0 as usize]
     }
 
     pub fn local(&self, id: LocalId) -> &Local {

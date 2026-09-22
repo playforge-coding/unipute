@@ -197,6 +197,34 @@ Declare them in any order, since Unipute writes them out callee first. No
 shader language has recursion, so a function that calls itself, directly or
 through another, is a compile error.
 
+### Workgroup memory
+
+A `let` marked `#[workgroup]` at the top of the body is memory shared by the
+invocations of one workgroup. Index it like a buffer, and put a
+`workgroup_barrier()` between writing it and reading what the others wrote.
+
+```rust
+# use unipute::kernel;
+#[kernel(workgroup_size(64))]
+fn block_sum(input: &[f32], output: &mut [f32]) {
+    #[workgroup]
+    let tile: [f32; 64];
+
+    let lane = local_index();
+    tile[lane] = input[global_id().x];
+    workgroup_barrier();
+    if lane == 0u32 {
+        let mut total = 0.0;
+        for i in 0..tile.len() {
+            total += tile[i];
+        }
+        output[workgroup_id().x] = total;
+    }
+}
+```
+
+The host never sees it, so it is not in `BINDINGS`.
+
 ### Built-ins
 
 `global_id()`, `local_id()`, `workgroup_id()` and `num_workgroups()` give a

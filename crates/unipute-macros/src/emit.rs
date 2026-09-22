@@ -14,6 +14,7 @@ pub fn kernel(kernel: &ir::Kernel) -> TokenStream {
     let name = &kernel.name;
     let [x, y, z] = kernel.workgroup_size;
     let resources = kernel.resources.iter().map(resource);
+    let shared = kernel.shared.iter().map(shared);
     let functions = kernel.functions.iter().map(function);
     let locals = kernel.locals.iter().map(local);
     let body = kernel.body.iter().map(stmt);
@@ -22,6 +23,7 @@ pub fn kernel(kernel: &ir::Kernel) -> TokenStream {
         {
             let mut kernel = ::unipute::ir::Kernel::new(#name, [#x, #y, #z]);
             kernel.resources = ::std::vec![#(#resources),*];
+            kernel.shared = ::std::vec![#(#shared),*];
             kernel.functions = ::std::vec![#(#functions),*];
             kernel.locals = ::std::vec![#(#locals),*];
             kernel.body = ::std::vec![#(#body),*];
@@ -77,6 +79,17 @@ fn resource(resource: &ir::Resource) -> TokenStream {
             binding: #binding,
             ty: #ty,
             access: #access,
+        }
+    }
+}
+
+fn shared(shared: &ir::Shared) -> TokenStream {
+    let name = &shared.name;
+    let ty = ty(&shared.ty);
+    quote! {
+        ::unipute::ir::Shared {
+            name: ::std::string::ToString::to_string(#name),
+            ty: #ty,
         }
     }
 }
@@ -252,6 +265,10 @@ fn expr(node: &ir::Expr) -> TokenStream {
         ir::Expr::Resource(id) => {
             let id = id.0;
             quote!(::unipute::ir::Expr::Resource(::unipute::ir::ResourceId(#id)))
+        }
+        ir::Expr::Shared(id) => {
+            let id = id.0;
+            quote!(::unipute::ir::Expr::Shared(::unipute::ir::SharedId(#id)))
         }
         ir::Expr::BuiltIn(value) => {
             let value = built_in(*value);

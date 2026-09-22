@@ -118,6 +118,27 @@ fn drift(points: &[Vec4<f32>], output: &mut [Vec4<f32>], step: &f32) {
     output[index] = vec4(moved.x, moved.y, moved.z, point.w);
 }
 
+/// Exercises workgroup memory: a tile every invocation writes one element of,
+/// a barrier, `.len()` on the tile, and a read of the whole tile by one
+/// invocation.
+#[kernel(workgroup_size(64))]
+fn block_sum(input: &[f32], output: &mut [f32]) {
+    #[workgroup]
+    let tile: [f32; 64];
+
+    let lane = local_index();
+    tile[lane] = input[global_id().x];
+    workgroup_barrier();
+
+    if lane == 0u32 {
+        let mut total = 0.0;
+        for i in 0..tile.len() {
+            total += tile[i];
+        }
+        output[workgroup_id().x] = total;
+    }
+}
+
 /// Exercises explicit binding placement.
 #[kernel(workgroup_size(1))]
 fn placed(
@@ -269,6 +290,72 @@ fn nested_functions_reach_the_ir() {
         Some(unipute::ir::Type::scalar(unipute::ir::Scalar::F32))
     );
     assert_eq!(ir.functions[2].result, None);
+}
+
+#[test]
+fn workgroup_memory_is_a_workgroup_variable() {
+    let wgsl = block_sum::WGSL;
+
+    assert!(
+        wgsl.contains("var<workgroup> tile: array<f32, 64>"),
+        "{wgsl}"
+    );
+    assert!(wgsl.contains("workgroupBarrier()"), "{wgsl}");
+    // `tile.len()` is known when the kernel is written, so it comes out as
+    // a number rather than a question to the driver.
+    assert!(!wgsl.contains("arrayLength((&tile"), "{wgsl}");
+
+    // The host never sees it, so it is not in the layout.
+    assert_eq!(block_sum::BINDINGS.len(), 2);
+    let ir = block_sum::ir();
+    assert_eq!(ir.shared.len(), 1);
+    assert_eq!(ir.shared[0].name, "tile");
+    assert_eq!(
+        ir.shared[0].ty,
+        unipute::ir::Type::Array {
+            element: Box::new(unipute::ir::Type::scalar(unipute::ir::Scalar::F32)),
+            len: Some(64),
+        }
+    );
+}
+
+#[cfg(feature = "runtime")]
+#[test]
+fn workgroup_memory_survives_the_runtime_path() {
+    let regenerated = unipute::compile_text(&block_sum::ir(), unipute::Target::Wgsl).unwrap();
+    assert_eq!(regenerated, block_sum::WGSL);
+}
+
+#[cfg(feature = "msl")]
+#[test]
+fn msl_spells_workgroup_memory_threadgroup() {
+    use unipute::MslKernel;
+
+    assert!(block_sum::MSL.contains("threadgroup"), "{}", block_sum::MSL);
+}
+
+#[cfg(feature = "hlsl")]
+#[test]
+fn hlsl_spells_workgroup_memory_groupshared() {
+    use unipute::HlslKernel;
+
+    assert!(
+        block_sum::HLSL.contains("groupshared float tile[64]"),
+        "{}",
+        block_sum::HLSL
+    );
+}
+
+#[cfg(feature = "glsl")]
+#[test]
+fn glsl_spells_workgroup_memory_shared() {
+    use unipute::GlslKernel;
+
+    assert!(
+        block_sum::GLSL.contains("shared float tile[64]"),
+        "{}",
+        block_sum::GLSL
+    );
 }
 
 #[cfg(feature = "runtime")]

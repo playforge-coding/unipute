@@ -40,7 +40,7 @@ pub mod types;
 pub use backend::{Backend, Target};
 pub use expr::{
     BarrierScope, BinaryOp, BuiltIn, Expr, FunctionId, Literal, LocalId, MathFn, ParamId,
-    ResourceId, Stmt, UnaryOp,
+    ResourceId, SharedId, Stmt, UnaryOp,
 };
-pub use kernel::{Access, Function, Kernel, Local, Param, Resource, Stage};
+pub use kernel::{Access, Function, Kernel, Local, Param, Resource, Shared, Stage};
 pub use types::{Scalar, Type, VectorSize};

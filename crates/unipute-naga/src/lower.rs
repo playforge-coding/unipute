@@ -41,11 +41,13 @@ pub fn lower(kernel: &ir::Kernel) -> Result<naga::Module> {
     let mut module = naga::Module::default();
     let mut types = Types::default();
     let globals = lower_resources(kernel, &mut module, &mut types)?;
+    let workgroup = lower_shared(kernel, &mut module, &mut types)?;
 
     let mut shared = Shared {
         kernel,
         types,
         globals,
+        workgroup,
         functions: Vec::new(),
     };
 
@@ -118,6 +120,9 @@ struct Shared<'a> {
     kernel: &'a ir::Kernel,
     types: Types,
     globals: Vec<Handle<naga::GlobalVariable>>,
+    /// One handle per entry in `Kernel::shared`. Workgroup memory is a
+    /// global too, in naga's eyes, just one with no binding.
+    workgroup: Vec<Handle<naga::GlobalVariable>>,
     /// One handle per entry in `Kernel::functions`, filled in as they are
     /// lowered. A call looks its target up here.
     functions: Vec<Handle<naga::Function>>,
@@ -169,12 +174,14 @@ impl Shared<'_> {
             types: &mut self.types,
             module_types,
             globals: &self.globals,
+            workgroup: &self.workgroup,
             functions: &self.functions,
             source_locals: locals,
             locals: Vec::new(),
             params: Vec::new(),
             built_in_exprs: HashMap::new(),
             global_exprs: HashMap::new(),
+            shared_exprs: Vec::new(),
             literals: HashMap::new(),
             expressions: core::mem::take(&mut function.expressions),
             local_variables: core::mem::take(&mut function.local_variables),
@@ -222,6 +229,44 @@ fn lower_resources(
                     group: resource.group,
                     binding: resource.binding,
                 }),
+                ty,
+                init: None,
+                memory_decorations: naga::MemoryDecorations::empty(),
+            },
+            SPAN,
+        );
+        globals.push(handle);
+    }
+    Ok(globals)
+}
+
+/// Declares the kernel's workgroup memory.
+///
+/// Each entry becomes a global variable in naga's workgroup address space,
+/// which every writer turns into its own spelling of the same thing:
+/// `var<workgroup>` in WGSL, `groupshared` in HLSL, `threadgroup` in MSL and
+/// `shared` in GLSL. There is no binding, since the host never touches it,
+/// and no initialiser, since naga does not allow one in that address space.
+fn lower_shared(
+    kernel: &ir::Kernel,
+    module: &mut naga::Module,
+    types: &mut Types,
+) -> Result<Vec<Handle<naga::GlobalVariable>>> {
+    let mut globals = Vec::with_capacity(kernel.shared.len());
+    for shared in &kernel.shared {
+        if matches!(shared.ty, ir::Type::Array { len: None, .. }) {
+            return Err(Error::UnsupportedType(format!(
+                "workgroup memory `{}` needs a fixed length, it is laid out before the workgroup \
+                 starts",
+                shared.name
+            )));
+        }
+        let ty = types.lower(&mut module.types, &shared.ty)?;
+        let handle = module.global_variables.append(
+            naga::GlobalVariable {
+                name: Some(shared.name.clone()),
+                space: naga::AddressSpace::WorkGroup,
+                binding: None,
                 ty,
                 init: None,
                 memory_decorations: naga::MemoryDecorations::empty(),
@@ -484,6 +529,7 @@ fn walk_expr(expr: &ir::Expr, visit: &mut impl FnMut(&ir::Expr)) {
         | ir::Expr::Local(_)
         | ir::Expr::Param(_)
         | ir::Expr::Resource(_)
+        | ir::Expr::Shared(_)
         | ir::Expr::BuiltIn(_)
         | ir::Expr::ArrayLength(_) => {}
     }
@@ -515,6 +561,7 @@ struct Context<'a> {
     types: &'a mut Types,
     module_types: &'a mut UniqueArena<naga::Type>,
     globals: &'a [Handle<naga::GlobalVariable>],
+    workgroup: &'a [Handle<naga::GlobalVariable>],
     functions: &'a [Handle<naga::Function>],
     /// The locals of the function being lowered, in declaration order.
     source_locals: &'a [ir::Local],
@@ -525,6 +572,8 @@ struct Context<'a> {
     params: Vec<Handle<Expression>>,
     built_in_exprs: HashMap<ir::BuiltIn, Handle<Expression>>,
     global_exprs: HashMap<usize, Handle<Expression>>,
+    /// One pointer expression per entry in `Kernel::shared`, in order.
+    shared_exprs: Vec<Handle<Expression>>,
     literals: HashMap<LiteralKey, Handle<Expression>>,
     expressions: Arena<Expression>,
     local_variables: Arena<naga::LocalVariable>,
@@ -559,6 +608,13 @@ impl Context<'_> {
                 .expressions
                 .append(Expression::GlobalVariable(global), SPAN);
             self.global_exprs.insert(index, handle);
+        }
+
+        for global in self.workgroup {
+            let handle = self
+                .expressions
+                .append(Expression::GlobalVariable(*global), SPAN);
+            self.shared_exprs.push(handle);
         }
 
         for local in self.source_locals {
@@ -827,6 +883,7 @@ impl Context<'_> {
                 ))
             }
             ir::Expr::Resource(resource) => self.global_pointer(*resource),
+            ir::Expr::Shared(shared) => self.shared_pointer(*shared),
             ir::Expr::Param(param) => Err(Error::Invalid(format!(
                 "parameter {} cannot be assigned to",
                 param.0
@@ -847,6 +904,13 @@ impl Context<'_> {
             .get(&(resource.0 as usize))
             .copied()
             .ok_or_else(|| Error::Invalid(format!("resource {} is out of range", resource.0)))
+    }
+
+    fn shared_pointer(&mut self, shared: ir::SharedId) -> Result<Handle<Expression>> {
+        self.shared_exprs
+            .get(shared.0 as usize)
+            .copied()
+            .ok_or_else(|| Error::Invalid(format!("workgroup memory {} is out of range", shared.0)))
     }
 
     fn lower_expr(
@@ -904,6 +968,21 @@ impl Context<'_> {
                     )));
                 }
                 let pointer = self.global_pointer(*resource)?;
+                Ok(self.expressions.append(Expression::Load { pointer }, SPAN))
+            }
+            ir::Expr::Shared(shared) => {
+                // The same rule as a resource: an array is a place, not a
+                // value, and a scalar or vector reads through its pointer.
+                let declaration = self.kernel.shared.get(shared.0 as usize).ok_or_else(|| {
+                    Error::Invalid(format!("workgroup memory {} is out of range", shared.0))
+                })?;
+                if matches!(declaration.ty, ir::Type::Array { .. }) {
+                    return Err(Error::Invalid(format!(
+                        "workgroup memory `{}` is an array, index it before using its value",
+                        declaration.name
+                    )));
+                }
+                let pointer = self.shared_pointer(*shared)?;
                 Ok(self.expressions.append(Expression::Load { pointer }, SPAN))
             }
             // Reading through an index is normally a pointer followed by a

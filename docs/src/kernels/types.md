@@ -133,8 +133,9 @@ error: the type of this value is unclear, annotate it as in `let x: f32 = ...`
 
 ## Arrays with a fixed length
 
-The IR can describe them, but the `#[kernel]` macro has no syntax for them
-yet, so buffers are slices. Use a slice and index it.
+`[T; N]` is the type of [workgroup memory](./workgroup-memory.md), and that is
+the only place the macro accepts it. A local cannot be an array yet, and a
+buffer is always a slice, since its length is the host's decision.
 
 ## What is not here yet
 

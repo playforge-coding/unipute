@@ -70,6 +70,9 @@ fn main() {
             resource.group, resource.binding, resource.name, resource.ty, resource.access
         );
     }
+    for shared in &ir.shared {
+        println!("  workgroup {}: {}", shared.name, shared.ty);
+    }
     println!();
 
     for function in &ir.functions {
@@ -193,6 +196,7 @@ impl Printer<'_> {
             Expr::Local(local) => self.locals[local.0 as usize].name.clone(),
             Expr::Param(param) => self.params[param.0 as usize].name.clone(),
             Expr::Resource(resource) => self.kernel.resource(*resource).name.clone(),
+            Expr::Shared(shared) => self.kernel.shared(*shared).name.clone(),
             Expr::BuiltIn(built_in) => format!("{}()", built_in.intrinsic_name()),
             Expr::Index { base, index } => {
                 format!("{}[{}]", self.expr(base), self.expr(index))
@@ -359,6 +363,7 @@ impl Stats {
             | Expr::Local(_)
             | Expr::Param(_)
             | Expr::Resource(_)
+            | Expr::Shared(_)
             | Expr::ArrayLength(_) => {}
         }
     }

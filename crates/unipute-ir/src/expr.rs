@@ -12,6 +12,11 @@ pub struct LocalId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ResourceId(pub u32);
 
+/// Index of a workgroup memory declaration in
+/// [`Kernel::shared`](crate::Kernel::shared).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SharedId(pub u32);
+
 /// Index of a parameter in [`Function::params`](crate::Function::params).
 ///
 /// Only meaningful inside a helper function's body. The entry point takes no
@@ -236,6 +241,9 @@ pub enum Expr {
     Param(ParamId),
     /// Names a resource so it can be indexed.
     Resource(ResourceId),
+    /// Names workgroup shared memory. A scalar or a vector reads its value
+    /// directly, and an array is a place to index, just like a resource.
+    Shared(SharedId),
     /// Reads a hardware provided value.
     BuiltIn(BuiltIn),
     /// `base[index]`.

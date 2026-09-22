@@ -6,8 +6,8 @@
 #![cfg(feature = "wgsl")]
 
 use unipute_ir::{
-    Access, BinaryOp, BuiltIn, Expr, Function, FunctionId, Kernel, Literal, Local, LocalId, MathFn,
-    Param, ParamId, Resource, ResourceId, Scalar, Stmt, Type,
+    Access, BarrierScope, BinaryOp, BuiltIn, Expr, Function, FunctionId, Kernel, Literal, Local,
+    LocalId, MathFn, Param, ParamId, Resource, ResourceId, Scalar, Shared, SharedId, Stmt, Type,
 };
 
 /// A kernel that scales one buffer into another, guarded by a bounds check.
@@ -212,6 +212,125 @@ fn helper_kernel() -> Kernel {
     kernel
 }
 
+/// A kernel that sums each workgroup's slice of the input through workgroup
+/// memory: every invocation drops its element into a tile, a barrier makes
+/// the writes visible, and one invocation per group adds the tile up.
+fn block_sum_kernel() -> Kernel {
+    let mut kernel = Kernel::new("block_sum", [64, 1, 1]);
+    kernel.resources.push(Resource {
+        name: "input".to_owned(),
+        group: 0,
+        binding: 0,
+        ty: Type::slice(Type::scalar(Scalar::F32)),
+        access: Access::Read,
+    });
+    kernel.resources.push(Resource {
+        name: "output".to_owned(),
+        group: 0,
+        binding: 1,
+        ty: Type::slice(Type::scalar(Scalar::F32)),
+        access: Access::ReadWrite,
+    });
+    kernel.shared.push(Shared {
+        name: "tile".to_owned(),
+        ty: Type::Array {
+            element: Box::new(Type::scalar(Scalar::F32)),
+            len: Some(64),
+        },
+    });
+    kernel.locals.push(Local {
+        name: "lane".to_owned(),
+        ty: Type::scalar(Scalar::U32),
+    });
+    kernel.locals.push(Local {
+        name: "total".to_owned(),
+        ty: Type::scalar(Scalar::F32),
+    });
+    kernel.locals.push(Local {
+        name: "i".to_owned(),
+        ty: Type::scalar(Scalar::U32),
+    });
+
+    let lane = LocalId(0);
+    let total = LocalId(1);
+    let i = LocalId(2);
+    let tile = SharedId(0);
+
+    kernel.body.push(Stmt::Declare {
+        local: lane,
+        value: Some(Expr::BuiltIn(BuiltIn::LocalInvocationIndex)),
+    });
+    kernel.body.push(Stmt::Store {
+        place: Expr::Index {
+            base: Box::new(Expr::Shared(tile)),
+            index: Box::new(Expr::Local(lane)),
+        },
+        value: Expr::Index {
+            base: Box::new(Expr::Resource(ResourceId(0))),
+            index: Box::new(Expr::Component {
+                base: Box::new(Expr::BuiltIn(BuiltIn::GlobalInvocationId)),
+                index: 0,
+            }),
+        },
+    });
+    kernel.body.push(Stmt::Barrier(BarrierScope::Workgroup));
+    kernel.body.push(Stmt::If {
+        condition: Expr::Binary {
+            op: BinaryOp::Equal,
+            lhs: Box::new(Expr::Local(lane)),
+            rhs: Box::new(Expr::Literal(Literal::U32(0))),
+        },
+        then_branch: vec![
+            Stmt::Declare {
+                local: total,
+                value: Some(Expr::Literal(Literal::F32(0.0))),
+            },
+            Stmt::Declare {
+                local: i,
+                value: Some(Expr::Literal(Literal::U32(0))),
+            },
+            Stmt::While {
+                condition: Expr::Binary {
+                    op: BinaryOp::Less,
+                    lhs: Box::new(Expr::Local(i)),
+                    rhs: Box::new(Expr::Literal(Literal::U32(64))),
+                },
+                body: vec![Stmt::Store {
+                    place: Expr::Local(total),
+                    value: Expr::Binary {
+                        op: BinaryOp::Add,
+                        lhs: Box::new(Expr::Local(total)),
+                        rhs: Box::new(Expr::Index {
+                            base: Box::new(Expr::Shared(tile)),
+                            index: Box::new(Expr::Local(i)),
+                        }),
+                    },
+                }],
+                continuing: vec![Stmt::Store {
+                    place: Expr::Local(i),
+                    value: Expr::Binary {
+                        op: BinaryOp::Add,
+                        lhs: Box::new(Expr::Local(i)),
+                        rhs: Box::new(Expr::Literal(Literal::U32(1))),
+                    },
+                }],
+            },
+            Stmt::Store {
+                place: Expr::Index {
+                    base: Box::new(Expr::Resource(ResourceId(1))),
+                    index: Box::new(Expr::Component {
+                        base: Box::new(Expr::BuiltIn(BuiltIn::WorkgroupId)),
+                        index: 0,
+                    }),
+                },
+                value: Expr::Local(total),
+            },
+        ],
+        else_branch: Vec::new(),
+    });
+    kernel
+}
+
 #[test]
 fn scale_kernel_produces_wgsl() {
     let wgsl = unipute_naga::compile_wgsl(&scale_kernel()).unwrap();
@@ -298,6 +417,44 @@ fn calling_a_function_that_returns_nothing_for_a_value_is_rejected() {
 
     let error = unipute_naga::compile_wgsl(&kernel).unwrap_err();
     assert!(error.to_string().contains("returns nothing"), "{error}");
+}
+
+#[test]
+fn workgroup_memory_is_declared_without_a_binding() {
+    let wgsl = unipute_naga::compile_wgsl(&block_sum_kernel()).unwrap();
+
+    assert!(
+        wgsl.contains("var<workgroup> tile: array<f32, 64>"),
+        "{wgsl}"
+    );
+    assert!(wgsl.contains("workgroupBarrier()"), "{wgsl}");
+    // The two buffers are bound. The tile is not, since the host never sees
+    // it, so it must not take a binding slot.
+    assert_eq!(wgsl.matches("@binding(").count(), 2, "{wgsl}");
+}
+
+#[test]
+fn using_a_workgroup_array_as_a_value_is_rejected() {
+    let mut kernel = block_sum_kernel();
+    kernel.body = vec![Stmt::Store {
+        place: Expr::Index {
+            base: Box::new(Expr::Resource(ResourceId(1))),
+            index: Box::new(Expr::Literal(Literal::U32(0))),
+        },
+        value: Expr::Shared(SharedId(0)),
+    }];
+
+    let error = unipute_naga::compile_wgsl(&kernel).unwrap_err();
+    assert!(error.to_string().contains("index it"), "{error}");
+}
+
+#[test]
+fn runtime_sized_workgroup_memory_is_rejected() {
+    let mut kernel = block_sum_kernel();
+    kernel.shared[0].ty = Type::slice(Type::scalar(Scalar::F32));
+
+    let error = unipute_naga::compile_wgsl(&kernel).unwrap_err();
+    assert!(error.to_string().contains("fixed length"), "{error}");
 }
 
 #[test]

@@ -9,8 +9,9 @@ Compute kernels, end to end, across WGSL, SPIR-V, MSL, HLSL and GLSL. Scalars
 and vectors, storage buffers and uniforms, the control flow in [Control
 flow](./kernels/control-flow.md), the functions in [Built-ins and
 functions](./kernels/builtins.md), the nested functions in [Your own
-functions](./kernels/functions.md), barriers, and binding layout you can read
-from the host.
+functions](./kernels/functions.md), [workgroup
+memory](./kernels/workgroup-memory.md) and barriers, and binding layout you
+can read from the host.
 
 That part is tested and is what the rest of this book describes.
 
@@ -37,15 +38,6 @@ that wrong silently is worse than not offering it.
 No atomic operations, so no counters shared across invocations and no lock
 free algorithms. Naga has these as a type and a statement, so it is mostly a
 matter of surfacing them.
-
-## Workgroup shared memory
-
-No way to declare memory shared within a workgroup. `workgroup_barrier()`
-exists, which is a little odd given there is not yet much to synchronise, but
-it is there because storage buffer synchronisation does work.
-
-This needs an address space on locals. It matters for anything with a
-reduction in it, so it is high on the list.
 
 ## Matrices
 
@@ -105,8 +97,7 @@ not there.
 ## How to read this list
 
 Everything here is a gap rather than a decision against. The ones with the
-clearest path are structs, atomics and workgroup memory, since naga already
-supports all three.
+clearest path are structs and atomics, since naga already supports both.
 
 If one of these is blocking you, saying so is useful. It is easier to
 prioritise against a real kernel someone is trying to write than against a

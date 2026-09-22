@@ -14,6 +14,7 @@
 - [Control flow](./kernels/control-flow.md)
 - [Built-ins and functions](./kernels/builtins.md)
 - [Your own functions](./kernels/functions.md)
+- [Workgroup memory](./kernels/workgroup-memory.md)
 
 # Using what comes out
 

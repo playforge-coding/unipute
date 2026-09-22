@@ -143,6 +143,7 @@ impl Scope<'_> {
             // A buffer has no value of its own, but naming it is how you index
             // it, so the array type is passed along for `index` to use.
             Some(Binding::Resource { id, ty }) => Ok(Typed::strong(ir::Expr::Resource(id), ty)),
+            Some(Binding::Shared { id, ty }) => Ok(Typed::strong(ir::Expr::Shared(id), ty)),
             None => Err(syn::Error::new_spanned(path, self.unknown_name(&name))),
         }
     }
@@ -153,7 +154,7 @@ impl Scope<'_> {
         match self.helper {
             Some(helper) => format!(
                 "`{name}` is not a parameter or a local variable of `{}`, and a nested function \
-                 cannot reach the kernel's buffers, so pass it what it needs",
+                 cannot reach the kernel's buffers or workgroup memory, so pass it what it needs",
                 helper.name
             ),
             None => format!("`{name}` is not a kernel parameter or a local variable"),
@@ -336,16 +337,20 @@ impl Scope<'_> {
             ));
         }
         let receiver = self.expr(&call.receiver, None)?;
-        let ir::Expr::Resource(resource) = receiver.expr else {
-            return Err(syn::Error::new_spanned(
+        match (&receiver.expr, &receiver.ty) {
+            (ir::Expr::Resource(resource), Some(ir::Type::Array { len: None, .. })) => Ok(
+                Typed::scalar(ir::Expr::ArrayLength(*resource), ir::Scalar::U32),
+            ),
+            // Workgroup memory has its length written in the kernel, so there
+            // is nothing to ask the driver: the length is a plain number.
+            (ir::Expr::Shared(_), Some(ir::Type::Array { len: Some(len), .. })) => Ok(
+                Typed::scalar(ir::Expr::Literal(ir::Literal::U32(*len)), ir::Scalar::U32),
+            ),
+            _ => Err(syn::Error::new_spanned(
                 &call.receiver,
-                "`len` only works on a slice parameter",
-            ));
-        };
-        Ok(Typed::scalar(
-            ir::Expr::ArrayLength(resource),
-            ir::Scalar::U32,
-        ))
+                "`len` only works on a slice parameter or on workgroup memory that is an array",
+            )),
+        }
     }
 
     fn call(&mut self, call: &syn::ExprCall, expected: Option<ir::Scalar>) -> syn::Result<Typed> {

@@ -51,7 +51,9 @@ both, as in `spv = ["unipute-macros/spv", "unipute-naga?/spv"]`.
    `Stmt`s, resolving names against a scope stack. Untyped integer literals
    take their type from the other side of the operator they appear in. Nested
    `fn` items are read first, since a call has to resolve against a signature
-   whichever order the two were written in.
+   whichever order the two were written in. A `#[workgroup]` `let` becomes a
+   `Shared` entry on the kernel rather than a local, and produces no
+   statement.
 3. `unipute_naga::lower` builds a `naga::Module`. Two naga rules shape it:
    expressions must appear before their users, and most expressions have to
    sit inside a `Statement::Emit` range while a specific few must not. The
@@ -59,7 +61,9 @@ both, as in `spv = ["unipute-macros/spv", "unipute-naga?/spv"]`.
    arguments, are all created before the first emit range opens and looked up
    from a cache afterwards. A call's result is in that group too, but it
    cannot be made up front, so a call closes the open range and opens a new
-   one instead. Helpers are lowered before the entry point.
+   one instead. Helpers are lowered before the entry point. Workgroup memory
+   is a global variable in naga's workgroup address space, declared next to
+   the resources and looked up the same way, with no binding.
 4. `unipute_naga::validate` runs naga's validator. A failure here means a bug
    in Unipute, not in the user's kernel, so the message is passed through
    as it is.
@@ -165,7 +169,6 @@ pieces most likely to be wanted next, in rough order of value:
 - User defined structs as buffer element types. Naga supports them and the IR
   needs a `Type::Struct` variant with explicit layout.
 - Atomics, which naga has as `TypeInner::Atomic` and `Statement::Atomic`.
-- Workgroup shared memory, which needs an address space on locals.
 - Textures and samplers, which mostly matter once graphics stages land.
 
 Calling other functions is done, as nested `fn` items inside a kernel body.
@@ -177,7 +180,8 @@ A kernel body can declare `fn` items and call them. Three things about the
 design are worth knowing before changing any of it.
 
 **A helper captures nothing.** `ir::Function` has parameters, locals and a
-body, and no access to resources or built-ins. That is not a simplification:
+body, and no access to resources, workgroup memory or built-ins. That is not a
+simplification:
 shader languages hand bindings and built-ins to the entry point, and a function
 called from it cannot ask for them. It also happens to match what a nested `fn`
 means in Rust, so the rule needs no explaining to someone reading a kernel.

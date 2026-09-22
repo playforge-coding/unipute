@@ -335,6 +335,96 @@ fn two_dimensional_dispatches_cover_the_image() {
     assert_eq!(gpu.read::<f32>(&output_buffer), expected);
 }
 
+/// Workgroup memory with a tree reduction over it. Every invocation writes
+/// one element of the tile, then half of them at a time fold the top half
+/// onto the bottom, with a barrier between rounds, until element zero holds
+/// the sum of the workgroup's slice.
+#[kernel(workgroup_size(64))]
+fn block_sum(input: &[f32], output: &mut [f32]) {
+    #[workgroup]
+    let tile: [f32; 64];
+
+    let index = global_id().x;
+    let lane = local_index();
+    // An `if` rather than an early `return`: every invocation has to reach
+    // the barriers below, including the ones past the end of the input.
+    if index < input.len() {
+        tile[lane] = input[index];
+    } else {
+        tile[lane] = 0.0;
+    }
+    workgroup_barrier();
+
+    let mut stride = 32u32;
+    while stride > 0u32 {
+        if lane < stride {
+            tile[lane] += tile[lane + stride];
+        }
+        workgroup_barrier();
+        stride /= 2u32;
+    }
+
+    if lane == 0u32 {
+        output[workgroup_id().x] = tile[0];
+    }
+}
+
+#[test]
+fn workgroup_memory_sums_each_block() {
+    let Some(gpu) = gpu() else { return };
+
+    // Not a multiple of the workgroup size, so the last group has lanes past
+    // the end that have to contribute zero and still reach every barrier.
+    let elements = 1000u32;
+    let input: Vec<f32> = (0..elements).map(|i| (i % 7) as f32).collect();
+    let expected: Vec<f32> = input.chunks(64).map(|chunk| chunk.iter().sum()).collect();
+
+    let pipeline = gpu.pipeline::<block_sum>();
+    let groups = host::workgroups([elements, 1, 1], block_sum::WORKGROUP_SIZE);
+    let input_buffer = gpu.storage(&input);
+    let output_buffer = gpu.storage(&vec![0.0f32; groups[0] as usize]);
+    gpu.dispatch(&pipeline, &[&input_buffer, &output_buffer], groups);
+
+    assert_eq!(gpu.read::<f32>(&output_buffer), expected);
+}
+
+/// A single shared value, written by one invocation and read by the rest of
+/// its workgroup after the barrier: each group subtracts its first element
+/// from every element.
+#[kernel(workgroup_size(64))]
+fn subtract_first(input: &[f32], output: &mut [f32]) {
+    #[workgroup]
+    let first: f32;
+
+    let index = global_id().x;
+    if local_index() == 0u32 {
+        first = input[index];
+    }
+    workgroup_barrier();
+    if index < input.len() {
+        output[index] = input[index] - first;
+    }
+}
+
+#[test]
+fn a_shared_scalar_broadcasts_within_the_workgroup() {
+    let Some(gpu) = gpu() else { return };
+
+    let input: Vec<f32> = (0..200).map(|i| ((i * 13) % 31) as f32).collect();
+    let expected: Vec<f32> = input
+        .chunks(64)
+        .flat_map(|chunk| chunk.iter().map(|value| value - chunk[0]))
+        .collect();
+
+    let pipeline = gpu.pipeline::<subtract_first>();
+    let groups = host::workgroups([input.len() as u32, 1, 1], subtract_first::WORKGROUP_SIZE);
+    let input_buffer = gpu.storage(&input);
+    let output_buffer = gpu.storage(&vec![0.0f32; input.len()]);
+    gpu.dispatch(&pipeline, &[&input_buffer, &output_buffer], groups);
+
+    assert_eq!(gpu.read::<f32>(&output_buffer), expected);
+}
+
 /// A second bind group. `amount` takes index 2 rather than 0 so that its
 /// binding number is unique across groups, which is what the GLSL target
 /// needs.

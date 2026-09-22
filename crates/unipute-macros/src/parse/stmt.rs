@@ -4,7 +4,45 @@ use unipute_ir as ir;
 
 use super::Scope;
 use super::expr::{Typed, compound_op};
-use super::types::value_type;
+use super::types::{shared_type, value_type};
+
+/// What the attributes on a `let` ask for.
+#[derive(PartialEq)]
+enum LetAttr {
+    /// An ordinary local.
+    None,
+    /// `#[workgroup]`: memory shared by the whole workgroup rather than a
+    /// local of one invocation.
+    Workgroup,
+}
+
+/// Reads the attributes on a `let`, of which `#[workgroup]` is the only one
+/// that means anything here.
+fn let_attr(local: &syn::Local) -> syn::Result<LetAttr> {
+    let mut found = LetAttr::None;
+    for attr in &local.attrs {
+        if !attr.path().is_ident("workgroup") {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "the only attribute allowed on a `let` inside a kernel is `#[workgroup]`",
+            ));
+        }
+        if !matches!(attr.meta, syn::Meta::Path(_)) {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "`#[workgroup]` takes no arguments",
+            ));
+        }
+        if found == LetAttr::Workgroup {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "`#[workgroup]` is written twice on this `let`",
+            ));
+        }
+        found = LetAttr::Workgroup;
+    }
+    Ok(found)
+}
 
 impl Scope<'_> {
     /// Reads a braced block, in its own scope.
@@ -18,7 +56,10 @@ impl Scope<'_> {
     /// Reads the kernel's own body.
     ///
     /// The nested `fn` items have already been read into helpers, so they are
-    /// passed over here rather than reported as stray items.
+    /// passed over here rather than reported as stray items. This is also the
+    /// only place a `#[workgroup]` declaration is accepted: it is memory of
+    /// the whole kernel rather than a local of one block, so it sits at the
+    /// top level the way a `fn` item does.
     pub fn kernel_body(&mut self, block: &syn::Block) -> syn::Result<Vec<ir::Stmt>> {
         self.push_frame();
         let mut out = Vec::new();
@@ -27,12 +68,49 @@ impl Scope<'_> {
                 if matches!(stmt, syn::Stmt::Item(syn::Item::Fn(_))) {
                     continue;
                 }
+                if let syn::Stmt::Local(local) = stmt
+                    && let_attr(local)? == LetAttr::Workgroup
+                {
+                    self.workgroup_declaration(local)?;
+                    continue;
+                }
                 self.stmt(stmt, &mut out)?;
             }
             Ok(())
         })();
         self.pop_frame();
         result.map(|()| out)
+    }
+
+    /// Reads `#[workgroup] let name: [T; N];` into workgroup memory.
+    ///
+    /// No statement comes out of it. The memory is declared for the whole
+    /// kernel, not created when the line runs, so all that happens here is
+    /// that the name goes into scope.
+    fn workgroup_declaration(&mut self, local: &syn::Local) -> syn::Result<()> {
+        let (name, annotation) = binding_name(&local.pat)?;
+        let Some(annotation) = annotation else {
+            return Err(syn::Error::new_spanned(
+                &local.pat,
+                format!("workgroup memory needs a type, write `let {name}: [f32; 64]`"),
+            ));
+        };
+        if let Some(init) = &local.init {
+            return Err(syn::Error::new_spanned(
+                &init.expr,
+                "workgroup memory cannot be given a value, since every invocation writes its \
+                 own part of it",
+            ));
+        }
+        let ty = shared_type(&annotation)?;
+        if self.shared.iter().any(|shared| shared.name == name) {
+            return Err(syn::Error::new_spanned(
+                &local.pat,
+                format!("`{name}` is already declared as workgroup memory"),
+            ));
+        }
+        self.declare_shared(&name, ty);
+        Ok(())
     }
 
     /// Reads a helper's body, where a trailing expression is the return value
@@ -119,6 +197,23 @@ impl Scope<'_> {
     }
 
     fn let_binding(&mut self, local: &syn::Local, out: &mut Vec<ir::Stmt>) -> syn::Result<()> {
+        if let_attr(local)? == LetAttr::Workgroup {
+            // The kernel body handles these itself before they get here, so
+            // reaching this point means the declaration is somewhere it
+            // cannot go.
+            return Err(syn::Error::new_spanned(
+                &local.pat,
+                match self.helper {
+                    Some(helper) => format!(
+                        "workgroup memory belongs to the kernel body, so `{}` cannot declare it",
+                        helper.name
+                    ),
+                    None => "workgroup memory is declared at the top level of the kernel body, \
+                             not inside a block"
+                        .to_owned(),
+                },
+            ));
+        }
         let (name, annotation) = binding_name(&local.pat)?;
         let Some(init) = &local.init else {
             return Err(syn::Error::new_spanned(
@@ -329,6 +424,22 @@ impl Scope<'_> {
                 match &typed.expr {
                     ir::Expr::Local(_) | ir::Expr::Index { .. } | ir::Expr::Component { .. } => {
                         Ok(typed)
+                    }
+                    // A single shared value is assigned by name. A shared
+                    // array is written one element at a time, like a buffer.
+                    ir::Expr::Shared(id) => {
+                        let shared = &self.shared[id.0 as usize];
+                        if matches!(shared.ty, ir::Type::Array { .. }) {
+                            Err(syn::Error::new_spanned(
+                                expr,
+                                format!(
+                                    "`{}` is workgroup memory, assign to one element as in `{}[i] = ...`",
+                                    shared.name, shared.name
+                                ),
+                            ))
+                        } else {
+                            Ok(typed)
+                        }
                     }
                     ir::Expr::Resource(id) => {
                         let resource = &self.resources[id.0 as usize];

@@ -1,0 +1,5 @@
+error: workgroup memory belongs to the kernel body, so `first` cannot declare it
+ --> tests/ui/workgroup_memory_in_nested_function.rs:7:13
+  |
+7 |         let tile: [f32; 64];
+  |             ^^^^^^^^^^^^^^^

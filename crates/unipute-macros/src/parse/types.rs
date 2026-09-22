@@ -50,6 +50,58 @@ pub fn param_type(ty: &syn::Type) -> syn::Result<ParamType> {
     }
 }
 
+/// Reads the type of workgroup memory: a value type, or a fixed length array
+/// of one, nested as deep as the kernel likes.
+///
+/// The length has to be a number written in the kernel. A `const` from the
+/// surrounding crate is not visible in here, the same as everywhere else in a
+/// kernel body.
+pub fn shared_type(ty: &syn::Type) -> syn::Result<ir::Type> {
+    match ty {
+        syn::Type::Array(array) => {
+            let element = shared_type(&array.elem)?;
+            let len = array_len(&array.len)?;
+            Ok(ir::Type::Array {
+                element: Box::new(element),
+                len: Some(len),
+            })
+        }
+        syn::Type::Slice(_) => Err(syn::Error::new_spanned(
+            ty,
+            "workgroup memory needs a fixed length, write `[f32; 64]`",
+        )),
+        other => value_type(other),
+    }
+}
+
+fn array_len(len: &syn::Expr) -> syn::Result<u32> {
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Int(value),
+        ..
+    }) = len
+    else {
+        return Err(syn::Error::new_spanned(
+            len,
+            "an array length has to be written as a number, a `const` is not visible inside a \
+             kernel",
+        ));
+    };
+    if !matches!(value.suffix(), "" | "usize") {
+        return Err(syn::Error::new_spanned(
+            value,
+            "an array length is a `usize`, write it without a suffix",
+        ));
+    }
+    let len: u32 = value.base10_parse()?;
+    if len == 0 {
+        return Err(syn::Error::new_spanned(
+            value,
+            "workgroup memory needs at least one element",
+        ));
+    }
+    Ok(len)
+}
+
 /// Reads a type that describes a value, such as `f32` or `vec3<f32>`.
 pub fn value_type(ty: &syn::Type) -> syn::Result<ir::Type> {
     let syn::Type::Path(path) = ty else {

@@ -19,6 +19,7 @@ pub enum Binding {
     Local { id: ir::LocalId, ty: ir::Type },
     Param { id: ir::ParamId, ty: ir::Type },
     Resource { id: ir::ResourceId, ty: ir::Type },
+    Shared { id: ir::SharedId, ty: ir::Type },
 }
 
 /// Names visible while reading one function body, and the locals it declares
@@ -34,6 +35,9 @@ pub struct Scope<'a> {
     functions: &'a [Signature],
     /// The helper being read, or `None` in the kernel body.
     helper: Option<&'a Signature>,
+    /// The workgroup memory declared so far. Only the kernel body adds to it,
+    /// since it belongs to the entry point the way resources do.
+    shared: Vec<ir::Shared>,
     /// The locals declared so far by the function being read.
     locals: Vec<ir::Local>,
     /// One map per nested block, innermost last.
@@ -48,6 +52,7 @@ impl<'a> Scope<'a> {
             resources,
             functions,
             helper: None,
+            shared: Vec::new(),
             locals: Vec::new(),
             frames: vec![HashMap::new()],
             loop_depth: 0,
@@ -70,6 +75,7 @@ impl<'a> Scope<'a> {
             resources: &[],
             functions,
             helper: Some(helper),
+            shared: Vec::new(),
             locals: Vec::new(),
             frames: vec![frame],
             loop_depth: 0,
@@ -106,6 +112,17 @@ impl<'a> Scope<'a> {
             ty: ty.clone(),
         });
         self.define(name.to_owned(), Binding::Local { id, ty });
+        id
+    }
+
+    /// Adds workgroup memory to the kernel and puts its name in scope.
+    fn declare_shared(&mut self, name: &str, ty: ir::Type) -> ir::SharedId {
+        let id = ir::SharedId(self.shared.len() as u32);
+        self.shared.push(ir::Shared {
+            name: name.to_owned(),
+            ty: ty.clone(),
+        });
+        self.define(name.to_owned(), Binding::Shared { id, ty });
         id
     }
 
@@ -155,6 +172,7 @@ pub fn kernel(attr: &KernelAttr, function: &syn::ItemFn) -> syn::Result<ir::Kern
         );
     }
     let body = scope.kernel_body(&function.block)?;
+    kernel.shared = scope.shared;
     kernel.locals = scope.locals;
     kernel.body = body;
 

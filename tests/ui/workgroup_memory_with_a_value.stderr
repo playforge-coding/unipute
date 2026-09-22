@@ -1,0 +1,5 @@
+error: workgroup memory cannot be given a value, since every invocation writes its own part of it
+ --> tests/ui/workgroup_memory_with_a_value.rs:6:22
+  |
+6 |     let total: f32 = 0.0;
+  |                      ^^^

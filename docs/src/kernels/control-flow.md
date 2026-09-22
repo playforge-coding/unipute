@@ -182,13 +182,15 @@ fn with_barrier(data: &mut [f32]) {
 }
 ```
 
-`workgroup_barrier()` covers workgroup shared memory and
-`storage_barrier()` covers storage buffers.
+`workgroup_barrier()` covers [workgroup memory](./workgroup-memory.md), which
+is what most barriers are for, and `storage_barrier()` covers storage buffers.
 
 Every invocation in the workgroup has to reach the same barrier. Putting one
 inside an `if` that only some invocations take is undefined behaviour on most
-hardware. Unipute does not check this for you yet, so keep barriers at the top
-level of the kernel body.
+hardware, and an early `return` before a barrier is the same mistake in a
+different shape. Unipute does not check this for you yet, so keep barriers at
+the top level of the kernel body, or in a loop that every invocation runs the
+same number of times.
 
 ## Quick reference
 

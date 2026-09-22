@@ -26,7 +26,8 @@ written above the entry point that calls it.
 
 This is the rule worth reading twice. A nested `fn` in Rust cannot see the
 variables around it, and the same is true here, only more so: a nested function
-cannot reach the kernel's buffers or the hardware built-ins either.
+cannot reach the kernel's buffers, its workgroup memory or the hardware
+built-ins either.
 
 ```rust,ignore
 #[kernel(workgroup_size(64))]

@@ -56,15 +56,18 @@ The relationship between them is worth keeping in mind:
 global_id = workgroup_id * workgroup_size + local_id
 ```
 
-`local_id` is what you use to index into workgroup shared memory, which is on
-the roadmap rather than in the current release. Until then, `global_id` covers
-almost everything.
+`local_index()` is what you use to index into [workgroup
+memory](./workgroup-memory.md), since it runs from zero to one less than the
+workgroup size, and `workgroup_id()` is where a result for the whole group
+goes. Everywhere else, `global_id()` covers almost everything.
 
 ## Barriers
 
-`workgroup_barrier()` and `storage_barrier()`, both taking no arguments. See
-[Control flow](./control-flow.md#barriers) for when you need them and the rule
-about keeping them out of branches.
+`workgroup_barrier()` and `storage_barrier()`, both taking no arguments. The
+first is what makes a write to [workgroup memory](./workgroup-memory.md)
+visible to the rest of the group. See [Control
+flow](./control-flow.md#barriers) for when you need them and the rule about
+keeping them out of branches.
 
 ## Buffer length
 

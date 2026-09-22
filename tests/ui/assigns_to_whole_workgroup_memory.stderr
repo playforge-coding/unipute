@@ -1,0 +1,5 @@
+error: `tile` is workgroup memory, assign to one element as in `tile[i] = ...`
+ --> tests/ui/assigns_to_whole_workgroup_memory.rs:7:5
+  |
+7 |     tile = input[0];
+  |     ^^^^
