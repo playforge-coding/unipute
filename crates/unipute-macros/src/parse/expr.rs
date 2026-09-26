@@ -56,6 +56,7 @@ impl Scope<'_> {
             syn::Expr::Cast(cast) => self.cast(cast),
             syn::Expr::Index(index) => self.index(index),
             syn::Expr::Field(field) => self.field(field),
+            syn::Expr::Struct(literal) => self.construct(literal),
             syn::Expr::MethodCall(call) => self.method_call(call),
             syn::Expr::Call(call) => self.call(call, expected),
             other => Err(syn::Error::new_spanned(
@@ -232,7 +233,7 @@ impl Scope<'_> {
     }
 
     fn cast(&mut self, cast: &syn::ExprCast) -> syn::Result<Typed> {
-        let target = value_type(&cast.ty)?;
+        let target = value_type(&cast.ty, self.structs)?;
         let ir::Type::Scalar(scalar) = target else {
             return Err(syn::Error::new_spanned(
                 &cast.ty,
@@ -274,13 +275,32 @@ impl Scope<'_> {
         })
     }
 
+    /// `.x` on a vector, or `.name` on a struct.
     fn field(&mut self, field: &syn::ExprField) -> syn::Result<Typed> {
         let syn::Member::Named(name) = &field.member else {
             return Err(syn::Error::new_spanned(
                 &field.member,
-                "use `.x`, `.y`, `.z` or `.w` to read a vector component",
+                "a field is read by name here, use `.x` on a vector or `.name` on a struct",
             ));
         };
+        let base = self.expr(&field.base, None)?;
+
+        if let Some(ir::Type::Struct(def)) = &base.ty {
+            let Some((index, member)) = def.member(&name.to_string()) else {
+                return Err(syn::Error::new_spanned(
+                    name,
+                    format!("`{}` has no field `{name}`", def.name),
+                ));
+            };
+            return Ok(Typed::strong(
+                ir::Expr::Member {
+                    base: Box::new(base.expr),
+                    index,
+                },
+                member.ty.clone(),
+            ));
+        }
+
         let component = match name.to_string().as_str() {
             "x" => 0,
             "y" => 1,
@@ -293,7 +313,6 @@ impl Scope<'_> {
                 ));
             }
         };
-        let base = self.expr(&field.base, None)?;
         let ty = match &base.ty {
             Some(ir::Type::Vector { size, scalar }) => {
                 if component >= size.count() {
@@ -320,6 +339,95 @@ impl Scope<'_> {
             ty,
             weak: false,
         })
+    }
+
+    /// A struct literal such as `Body { position: p, mass: 1.0 }`.
+    ///
+    /// Every field has to be written, since a shader has no notion of a
+    /// default, and the values go into the IR in declaration order whatever
+    /// order they were written in.
+    fn construct(&mut self, literal: &syn::ExprStruct) -> syn::Result<Typed> {
+        let name = literal
+            .path
+            .segments
+            .last()
+            .ok_or_else(|| syn::Error::new_spanned(&literal.path, "empty struct path"))?
+            .ident
+            .to_string();
+        let Some(def) = self.struct_named(&name) else {
+            return Err(syn::Error::new_spanned(
+                &literal.path,
+                format!(
+                    "`{name}` is not a struct this kernel knows, put `#[derive(unipute::Layout)]` \
+                     on it"
+                ),
+            ));
+        };
+        if let Some(rest) = &literal.rest {
+            return Err(syn::Error::new_spanned(
+                rest,
+                format!("`..` is not supported here, write every field of `{name}`"),
+            ));
+        }
+
+        let mut members: Vec<Option<ir::Expr>> = vec![None; def.members.len()];
+        for field in &literal.fields {
+            let syn::Member::Named(ident) = &field.member else {
+                return Err(syn::Error::new_spanned(
+                    &field.member,
+                    format!("`{name}` has named fields, write them by name"),
+                ));
+            };
+            let Some((index, member)) = def.member(&ident.to_string()) else {
+                return Err(syn::Error::new_spanned(
+                    ident,
+                    format!("`{name}` has no field `{ident}`"),
+                ));
+            };
+            let slot = &mut members[index as usize];
+            if slot.is_some() {
+                return Err(syn::Error::new_spanned(
+                    ident,
+                    format!("`{ident}` is given twice"),
+                ));
+            }
+            let value = self.expr(&field.expr, member.ty.component_scalar())?;
+            if let Some(ty) = &value.ty
+                && ty != &member.ty
+            {
+                return Err(syn::Error::new_spanned(
+                    &field.expr,
+                    format!("`{name}::{ident}` is `{}`, but this is `{ty}`", member.ty),
+                ));
+            }
+            *slot = Some(value.expr);
+        }
+
+        let missing: Vec<&str> = def
+            .members
+            .iter()
+            .zip(&members)
+            .filter(|(_, value)| value.is_none())
+            .map(|(member, _)| member.name.as_str())
+            .collect();
+        if !missing.is_empty() {
+            return Err(syn::Error::new_spanned(
+                literal,
+                format!(
+                    "`{name}` is missing `{}`, a struct literal in a kernel writes every field",
+                    missing.join("`, `")
+                ),
+            ));
+        }
+
+        let ty = ir::Type::Struct(def.clone());
+        Ok(Typed::strong(
+            ir::Expr::Construct {
+                ty: def.clone(),
+                members: members.into_iter().flatten().collect(),
+            },
+            ty,
+        ))
     }
 
     fn method_call(&mut self, call: &syn::ExprMethodCall) -> syn::Result<Typed> {

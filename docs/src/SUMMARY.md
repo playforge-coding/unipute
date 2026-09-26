@@ -11,6 +11,7 @@
 
 - [Parameters and bindings](./kernels/parameters.md)
 - [Types](./kernels/types.md)
+- [Your own structs](./kernels/structs.md)
 - [Control flow](./kernels/control-flow.md)
 - [Built-ins and functions](./kernels/builtins.md)
 - [Your own functions](./kernels/functions.md)

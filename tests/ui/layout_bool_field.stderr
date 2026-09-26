@@ -1,0 +1,5 @@
+error: `raised` is a `bool`, which has no size the host and the GPU agree on, store a `u32` and compare it with zero
+ --> tests/ui/layout_bool_field.rs:6:13
+  |
+6 |     raised: bool,
+  |             ^^^^

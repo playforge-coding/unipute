@@ -130,7 +130,33 @@ fn vector_size(size: ir::VectorSize) -> TokenStream {
     }
 }
 
-fn ty(node: &ir::Type) -> TokenStream {
+/// Builds an expression that reconstructs a struct's layout.
+fn struct_type(def: &ir::StructType) -> TokenStream {
+    let name = &def.name;
+    let size = def.size;
+    let members = def.members.iter().map(|member| {
+        let name = &member.name;
+        let ty = ty(&member.ty);
+        let offset = member.offset;
+        quote! {
+            ::unipute::ir::StructMember {
+                name: ::std::string::ToString::to_string(#name),
+                ty: #ty,
+                offset: #offset,
+            }
+        }
+    });
+    quote! {
+        ::unipute::ir::StructType {
+            name: ::std::string::ToString::to_string(#name),
+            members: ::std::vec![#(#members),*],
+            size: #size,
+        }
+    }
+}
+
+/// Builds an expression that reconstructs a type.
+pub fn ty(node: &ir::Type) -> TokenStream {
     match node {
         ir::Type::Scalar(value) => {
             let value = scalar(*value);
@@ -153,6 +179,10 @@ fn ty(node: &ir::Type) -> TokenStream {
                     len: #len,
                 }
             }
+        }
+        ir::Type::Struct(def) => {
+            let def = struct_type(def);
+            quote!(::unipute::ir::Type::Struct(#def))
         }
     }
 }
@@ -293,6 +323,15 @@ fn expr(node: &ir::Expr) -> TokenStream {
                 }
             }
         }
+        ir::Expr::Member { base, index } => {
+            let base = expr(base);
+            quote! {
+                ::unipute::ir::Expr::Member {
+                    base: ::std::boxed::Box::new(#base),
+                    index: #index,
+                }
+            }
+        }
         ir::Expr::Unary { op, value } => {
             let op = unary_op(*op);
             let value = expr(value);
@@ -348,6 +387,16 @@ fn expr(node: &ir::Expr) -> TokenStream {
                     size: #size,
                     scalar: #kind,
                     components: ::std::vec![#(#components),*],
+                }
+            }
+        }
+        ir::Expr::Construct { ty: def, members } => {
+            let def = struct_type(def);
+            let members = members.iter().map(expr);
+            quote! {
+                ::unipute::ir::Expr::Construct {
+                    ty: #def,
+                    members: ::std::vec![#(#members),*],
                 }
             }
         }

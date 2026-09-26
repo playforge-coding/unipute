@@ -113,7 +113,7 @@ cargo run --example emit_shaders --features "spv,msl,hlsl,glsl"
 ## Examples
 
 Each file in [examples/](examples/) is about a different part of the job.
-Three of them run their kernels on a GPU through wgpu and check the answer
+Four of them run their kernels on a GPU through wgpu and check the answer
 against the CPU. wgpu is a dev dependency of this repository, not of Unipute,
 and the glue is in [examples/host/mod.rs](examples/host/mod.rs).
 
@@ -123,6 +123,7 @@ and the glue is in [examples/host/mod.rs](examples/host/mod.rs).
 | `image_blur`   | a two dimensional kernel blurring a picture, printed before and after |
 | `prefix_sum`   | three kernels and fourteen dispatches for one algorithm |
 | `nbody`        | vector buffers, vector helpers and vector maths, stepped on the GPU |
+| `particles`    | a buffer of structs and a uniform struct, shared by host and kernel |
 | `inspect_ir`   | walking a kernel's IR, the way a new back end would |
 | `retarget`     | choosing a target from the command line at run time |
 
@@ -146,6 +147,8 @@ A parameter's type decides how it is bound.
 | `&mut [T]`  | read and write storage buffer  |
 | `&T`, `T`   | uniform                        |
 
+`T` is a scalar, a vector, or one of your own structs.
+
 Parameters take consecutive bindings in group 0. Override that per parameter:
 
 ```rust
@@ -164,6 +167,39 @@ fn placed(
 Scalars are `f32`, `u32`, `i32` and `bool`. Vectors are `Vec2<T>`, `Vec3<T>`
 and `Vec4<T>`, built with `vec2`, `vec3` and `vec4`, and read with `.x` through
 `.w`.
+
+### Your own structs
+
+A `#[repr(C)]` struct with `#[derive(Layout)]` on it can go in a buffer, be a
+uniform, and be passed to and returned from a nested function. Fields are
+`f32`, `u32` or `i32`, or arrays of two to four of them, which the kernel sees
+as vectors.
+
+```rust
+# use unipute::{Layout, kernel};
+#[derive(Layout, Clone, Copy)]
+#[repr(C)]
+struct Particle {
+    position: [f32; 3],
+    mass: f32,
+}
+
+#[kernel(workgroup_size(64))]
+fn fall(particles: &mut [Particle], gravity: &Vec3<f32>, dt: &f32) {
+    let index = global_id().x;
+    if index < particles.len() {
+        let particle = particles[index];
+        particles[index] = Particle {
+            position: particle.position + gravity * dt,
+            mass: particle.mass,
+        };
+    }
+}
+```
+
+The derive works out the layout the GPU expects and refuses to compile if
+Rust's differs, saying which field to pad and by how much. The struct and the
+kernels using it have to be in the same crate.
 
 ### Control flow and operators
 

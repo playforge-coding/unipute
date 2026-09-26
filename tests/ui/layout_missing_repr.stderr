@@ -1,0 +1,5 @@
+error: `Particle` needs `#[repr(C)]`, so that its fields sit where the kernel expects them
+ --> tests/ui/layout_missing_repr.rs:4:8
+  |
+4 | struct Particle {
+  |        ^^^^^^^^

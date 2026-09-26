@@ -51,7 +51,12 @@ extern crate self as unipute;
 
 pub use unipute_ir as ir;
 pub use unipute_ir::{Access, Stage, Target};
-pub use unipute_macros::kernel;
+pub use unipute_macros::{Layout, kernel};
+
+// The second half of `#[kernel]`, reached through the macro that
+// `#[derive(Layout)]` leaves behind on a struct. Not for calling by hand.
+#[doc(hidden)]
+pub use unipute_macros::__kernel_with_layouts;
 
 #[cfg(feature = "runtime")]
 pub use unipute_naga as naga_backend;
@@ -87,6 +92,7 @@ mod guide {
         FirstKernel => "../docs/src/start/first-kernel.md",
         Parameters => "../docs/src/kernels/parameters.md",
         Types => "../docs/src/kernels/types.md",
+        Structs => "../docs/src/kernels/structs.md",
         ControlFlow => "../docs/src/kernels/control-flow.md",
         Builtins => "../docs/src/kernels/builtins.md",
         Functions => "../docs/src/kernels/functions.md",
@@ -115,6 +121,49 @@ pub struct BindingInfo {
     pub binding: u32,
     /// Whether the kernel reads, writes or only reads uniformly.
     pub access: Access,
+}
+
+/// A struct that a kernel can read from a buffer.
+///
+/// Derive it, and the struct becomes a type a kernel parameter or a helper can
+/// name. The derive works out the layout the GPU expects, checks that
+/// `#[repr(C)]` gave the struct the same one, and refuses to compile the two
+/// apart:
+///
+/// ```
+/// use unipute::{Layout, kernel};
+///
+/// #[derive(Layout, Clone, Copy)]
+/// #[repr(C)]
+/// struct Particle {
+///     position: [f32; 3],
+///     mass: f32,
+/// }
+///
+/// #[kernel(workgroup_size(64))]
+/// fn heavier(particles: &mut [Particle]) {
+///     let index = global_id().x;
+///     if index < particles.len() {
+///         particles[index].mass = particles[index].mass * 2.0;
+///     }
+/// }
+/// ```
+///
+/// A field is an `f32`, `u32` or `i32`, or an array of two to four of them,
+/// which the kernel sees as a `Vec2`, `Vec3` or `Vec4`. A field whose name
+/// starts with an underscore is padding, `[u8; N]`, that the kernel does not
+/// see. The struct and the kernels naming it live in the same crate.
+///
+/// The derive is the only way to implement this, since the kernel macro also
+/// needs the fields at compile time and the derive is what hands them over.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be used in a kernel",
+    note = "a kernel works with `f32`, `u32`, `i32`, `bool`, `Vec2`, `Vec3` and `Vec4`, and with \
+            structs that have `#[derive(unipute::Layout)]`"
+)]
+pub trait Layout {
+    /// The struct as the kernel sees it, with the byte offset of every field.
+    fn ty() -> ir::Type;
 }
 
 /// What every `#[kernel]` function turns into.

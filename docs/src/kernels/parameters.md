@@ -10,6 +10,9 @@ The type you write decides what kind of binding you get.
 | `&T` | uniform | read |
 | `T` | uniform | read |
 
+`T` is a scalar, a vector, or a struct of your own with `#[derive(Layout)]` on
+it, which [Your own structs](./structs.md) covers.
+
 ```rust
 # use unipute::kernel;
 #[kernel(workgroup_size(64))]

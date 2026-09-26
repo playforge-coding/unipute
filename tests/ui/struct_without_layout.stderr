@@ -1,0 +1,26 @@
+error: cannot find macro `Particle` in this scope
+ --> tests/ui/struct_without_layout.rs:9:29
+  |
+9 | fn heavier(particles: &mut [Particle]) {
+  |                             ^^^^^^^^
+  |
+  = note: `Particle` is in scope, but it is a struct, not a macro
+
+error[E0277]: `Particle` cannot be used in a kernel
+ --> tests/ui/struct_without_layout.rs:9:29
+  |
+9 | fn heavier(particles: &mut [Particle]) {
+  |                             ^^^^^^^^ unsatisfied trait bound
+  |
+help: the trait `unipute::Layout` is not implemented for `Particle`
+ --> tests/ui/struct_without_layout.rs:4:1
+  |
+4 | struct Particle {
+  | ^^^^^^^^^^^^^^^
+  = note: a kernel works with `f32`, `u32`, `i32`, `bool`, `Vec2`, `Vec3` and `Vec4`, and with structs that have `#[derive(unipute::Layout)]`
+note: required by a bound in `__unipute_needs_layout`
+ --> tests/ui/struct_without_layout.rs:8:1
+  |
+8 | #[kernel(workgroup_size(64))]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `__unipute_needs_layout`
+  = note: this error originates in the attribute macro `kernel` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -102,7 +102,7 @@ impl Scope<'_> {
                  own part of it",
             ));
         }
-        let ty = shared_type(&annotation)?;
+        let ty = shared_type(&annotation, self.structs)?;
         if self.shared.iter().any(|shared| shared.name == name) {
             return Err(syn::Error::new_spanned(
                 &local.pat,
@@ -228,7 +228,10 @@ impl Scope<'_> {
             ));
         }
 
-        let annotated = annotation.as_ref().map(value_type).transpose()?;
+        let annotated = annotation
+            .as_ref()
+            .map(|ty| value_type(ty, self.structs))
+            .transpose()?;
         let expected = annotated.as_ref().and_then(ir::Type::component_scalar);
         let value = self.expr(&init.expr, expected)?;
 
@@ -422,9 +425,10 @@ impl Scope<'_> {
             syn::Expr::Path(_) | syn::Expr::Index(_) | syn::Expr::Field(_) => {
                 let typed = self.expr(expr, None)?;
                 match &typed.expr {
-                    ir::Expr::Local(_) | ir::Expr::Index { .. } | ir::Expr::Component { .. } => {
-                        Ok(typed)
-                    }
+                    ir::Expr::Local(_)
+                    | ir::Expr::Index { .. }
+                    | ir::Expr::Component { .. }
+                    | ir::Expr::Member { .. } => Ok(typed),
                     // A single shared value is assigned by name. A shared
                     // array is written one element at a time, like a buffer.
                     ir::Expr::Shared(id) => {
@@ -553,7 +557,10 @@ impl Scope<'_> {
         let inclusive = matches!(range.limits, syn::RangeLimits::Closed(_));
 
         let (name, annotation) = binding_name(&loop_.pat)?;
-        let annotated = annotation.as_ref().map(value_type).transpose()?;
+        let annotated = annotation
+            .as_ref()
+            .map(|ty| value_type(ty, self.structs))
+            .transpose()?;
         let expected = annotated
             .as_ref()
             .and_then(ir::Type::component_scalar)

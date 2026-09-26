@@ -205,6 +205,11 @@ impl Printer<'_> {
                 let name = ["x", "y", "z", "w"][*index as usize];
                 format!("{}.{name}", self.expr(base))
             }
+            // The IR names a member by position. Its name is on the struct
+            // type, which the base expression's type would give, so a printer
+            // that tracks types could show it. This one does not, and shows
+            // the position.
+            Expr::Member { base, index } => format!("{}.{index}", self.expr(base)),
             Expr::Unary { op, value } => {
                 let symbol = match op {
                     ir::UnaryOp::Negate => "-",
@@ -223,6 +228,15 @@ impl Printer<'_> {
                 size, components, ..
             } => {
                 format!("vec{}({})", size.count(), self.args(components))
+            }
+            Expr::Construct { ty, members } => {
+                let fields: Vec<String> = ty
+                    .members
+                    .iter()
+                    .zip(members)
+                    .map(|(member, value)| format!("{}: {}", member.name, self.expr(value)))
+                    .collect();
+                format!("{} {{ {} }}", ty.name, fields.join(", "))
             }
             Expr::Call { function, args } => self.call(*function, args),
             Expr::ArrayLength(resource) => {
@@ -350,7 +364,7 @@ impl Stats {
                 self.expr(base);
                 self.expr(index);
             }
-            Expr::Component { base, .. } => self.expr(base),
+            Expr::Component { base, .. } | Expr::Member { base, .. } => self.expr(base),
             Expr::Unary { value, .. } => self.expr(value),
             Expr::Binary { lhs, rhs, .. } => {
                 self.expr(lhs);
@@ -358,6 +372,7 @@ impl Stats {
             }
             Expr::Cast { value, .. } => self.expr(value),
             Expr::Compose { components, .. } => self.exprs(components),
+            Expr::Construct { members, .. } => self.exprs(members),
             Expr::Call { args, .. } => self.exprs(args),
             Expr::Literal(_)
             | Expr::Local(_)

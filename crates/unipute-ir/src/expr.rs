@@ -1,6 +1,6 @@
 //! Expressions and statements.
 
-use crate::types::{Scalar, VectorSize};
+use crate::types::{Scalar, StructType, VectorSize};
 
 /// Index of a local variable in the locals of the function the statement
 /// belongs to, which is [`Kernel::locals`](crate::Kernel::locals) for the entry
@@ -256,6 +256,12 @@ pub enum Expr {
         base: Box<Expr>,
         index: u8,
     },
+    /// Selects one member of a struct by its position in
+    /// [`StructType::members`], such as `body.mass`.
+    Member {
+        base: Box<Expr>,
+        index: u32,
+    },
     Unary {
         op: UnaryOp,
         value: Box<Expr>,
@@ -279,6 +285,11 @@ pub enum Expr {
         size: VectorSize,
         scalar: Scalar,
         components: Vec<Expr>,
+    },
+    /// Builds a struct out of one value per member, in member order.
+    Construct {
+        ty: StructType,
+        members: Vec<Expr>,
     },
     /// Calls a helper function and uses its result. The callee must have a
     /// [`Function::result`](crate::Function::result).

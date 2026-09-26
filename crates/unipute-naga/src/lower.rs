@@ -294,6 +294,7 @@ impl Types {
         if let Some(handle) = self.cache.get(ty) {
             return Ok(*handle);
         }
+        let mut name = None;
         let inner = match ty {
             ir::Type::Scalar(scalar) => naga::TypeInner::Scalar(naga_scalar(*scalar)),
             ir::Type::Vector { size, scalar } => naga::TypeInner::Vector {
@@ -302,7 +303,11 @@ impl Types {
             },
             ir::Type::Array { element, len } => {
                 let base = self.lower(arena, element)?;
-                let stride = array_stride(element)?;
+                let stride = element.stride().ok_or_else(|| {
+                    Error::UnsupportedType(
+                        "a runtime sized array cannot be nested inside another type".to_owned(),
+                    )
+                })?;
                 let size = match len {
                     Some(len) => {
                         naga::ArraySize::Constant(core::num::NonZeroU32::new(*len).ok_or_else(
@@ -313,8 +318,25 @@ impl Types {
                 };
                 naga::TypeInner::Array { base, size, stride }
             }
+            ir::Type::Struct(def) => {
+                check_struct_layout(def)?;
+                let mut members = Vec::with_capacity(def.members.len());
+                for member in &def.members {
+                    members.push(naga::StructMember {
+                        name: Some(member.name.clone()),
+                        ty: self.lower(arena, &member.ty)?,
+                        binding: None,
+                        offset: member.offset,
+                    });
+                }
+                name = Some(def.name.clone());
+                naga::TypeInner::Struct {
+                    members,
+                    span: def.size,
+                }
+            }
         };
-        let handle = arena.insert(naga::Type { name: None, inner }, SPAN);
+        let handle = arena.insert(naga::Type { name, inner }, SPAN);
         self.cache.insert(ty.clone(), handle);
         Ok(handle)
     }
@@ -337,33 +359,45 @@ fn built_in_type(built_in: ir::BuiltIn) -> ir::Type {
     }
 }
 
-/// Size in bytes of a value of this type, following the std430 style rules the
-/// shader languages agree on for scalars and vectors.
-fn type_size(ty: &ir::Type) -> Result<u32> {
-    Ok(match ty {
-        ir::Type::Scalar(scalar) => u32::from(scalar.width()),
-        ir::Type::Vector { size, scalar } => {
-            let width = u32::from(scalar.width());
-            match size {
-                // A three component vector is padded out to four.
-                ir::VectorSize::Two => 2 * width,
-                ir::VectorSize::Three | ir::VectorSize::Four => 4 * width,
-            }
+/// Checks that a struct's offsets are the ones every writer will assume.
+///
+/// The IR carries offsets so that a host and a reader of the IR do not have to
+/// know the layout rules, but naga's writers lay a struct out by those rules
+/// on their own and only SPIR-V reads the offsets back. Anything other than
+/// the natural layout would come out differently per target, so it is
+/// rejected here rather than silently written five different ways.
+fn check_struct_layout(def: &ir::StructType) -> Result<()> {
+    if def.members.is_empty() {
+        return Err(Error::UnsupportedType(format!(
+            "struct `{}` has no members",
+            def.name
+        )));
+    }
+    let members = def
+        .members
+        .iter()
+        .map(|member| (member.name.clone(), member.ty.clone()));
+    let expected = ir::StructType::new(&def.name, members).ok_or_else(|| {
+        Error::UnsupportedType(format!(
+            "struct `{}` has a member with no fixed size",
+            def.name
+        ))
+    })?;
+    for (actual, expected) in def.members.iter().zip(&expected.members) {
+        if actual.offset != expected.offset {
+            return Err(Error::UnsupportedType(format!(
+                "member `{}` of `{}` is at byte {}, but the layout rules put it at byte {}",
+                actual.name, def.name, actual.offset, expected.offset
+            )));
         }
-        ir::Type::Array {
-            element,
-            len: Some(len),
-        } => array_stride(element)? * len,
-        ir::Type::Array { len: None, .. } => {
-            return Err(Error::UnsupportedType(
-                "a runtime sized array cannot be nested inside another type".to_owned(),
-            ));
-        }
-    })
-}
-
-fn array_stride(element: &ir::Type) -> Result<u32> {
-    type_size(element)
+    }
+    if def.size != expected.size {
+        return Err(Error::UnsupportedType(format!(
+            "struct `{}` says it is {} bytes, but its members take {}",
+            def.name, def.size, expected.size
+        )));
+    }
+    Ok(())
 }
 
 fn naga_scalar(scalar: ir::Scalar) -> naga::Scalar {
@@ -432,6 +466,7 @@ fn names_no_memory(expr: &ir::Expr) -> bool {
             | ir::Expr::Param(_)
             | ir::Expr::Call { .. }
             | ir::Expr::Compose { .. }
+            | ir::Expr::Construct { .. }
             | ir::Expr::Math { .. }
     )
 }
@@ -503,7 +538,9 @@ fn walk_expr(expr: &ir::Expr, visit: &mut impl FnMut(&ir::Expr)) {
             walk_expr(base, visit);
             walk_expr(index, visit);
         }
-        ir::Expr::Component { base, .. } => walk_expr(base, visit),
+        ir::Expr::Component { base, .. } | ir::Expr::Member { base, .. } => {
+            walk_expr(base, visit);
+        }
         ir::Expr::Unary { value, .. } => walk_expr(value, visit),
         ir::Expr::Binary { lhs, rhs, .. } => {
             walk_expr(lhs, visit);
@@ -518,6 +555,11 @@ fn walk_expr(expr: &ir::Expr, visit: &mut impl FnMut(&ir::Expr)) {
         ir::Expr::Compose { components, .. } => {
             for component in components {
                 walk_expr(component, visit);
+            }
+        }
+        ir::Expr::Construct { members, .. } => {
+            for member in members {
+                walk_expr(member, visit);
             }
         }
         ir::Expr::Call { args, .. } => {
@@ -882,6 +924,16 @@ impl Context<'_> {
                     SPAN,
                 ))
             }
+            ir::Expr::Member { base, index } => {
+                let base = self.lower_place(block, emitter, base)?;
+                Ok(self.expressions.append(
+                    Expression::AccessIndex {
+                        base,
+                        index: *index,
+                    },
+                    SPAN,
+                ))
+            }
             ir::Expr::Resource(resource) => self.global_pointer(*resource),
             ir::Expr::Shared(shared) => self.shared_pointer(*shared),
             ir::Expr::Param(param) => Err(Error::Invalid(format!(
@@ -998,6 +1050,16 @@ impl Context<'_> {
                     SPAN,
                 ))
             }
+            ir::Expr::Member { base, index } if names_no_memory(base) => {
+                let base = self.lower_expr(block, emitter, base)?;
+                Ok(self.expressions.append(
+                    Expression::AccessIndex {
+                        base,
+                        index: *index,
+                    },
+                    SPAN,
+                ))
+            }
             ir::Expr::Index { base, index } if names_no_memory(base) => {
                 let base = self.lower_expr(block, emitter, base)?;
                 let index = self.lower_expr(block, emitter, index)?;
@@ -1005,7 +1067,7 @@ impl Context<'_> {
                     .expressions
                     .append(Expression::Access { base, index }, SPAN))
             }
-            ir::Expr::Index { .. } | ir::Expr::Component { .. } => {
+            ir::Expr::Index { .. } | ir::Expr::Component { .. } | ir::Expr::Member { .. } => {
                 let pointer = self.lower_place(block, emitter, expr)?;
                 Ok(self.expressions.append(Expression::Load { pointer }, SPAN))
             }
@@ -1063,6 +1125,30 @@ impl Context<'_> {
                 let mut lowered = Vec::with_capacity(components.len());
                 for component in components {
                     lowered.push(self.lower_expr(block, emitter, component)?);
+                }
+                Ok(self.expressions.append(
+                    Expression::Compose {
+                        ty,
+                        components: lowered,
+                    },
+                    SPAN,
+                ))
+            }
+            ir::Expr::Construct { ty: def, members } => {
+                if members.len() != def.members.len() {
+                    return Err(Error::Invalid(format!(
+                        "`{}` has {} members but {} were given",
+                        def.name,
+                        def.members.len(),
+                        members.len()
+                    )));
+                }
+                let ty = self
+                    .types
+                    .lower(self.module_types, &ir::Type::Struct(def.clone()))?;
+                let mut lowered = Vec::with_capacity(members.len());
+                for member in members {
+                    lowered.push(self.lower_expr(block, emitter, member)?);
                 }
                 Ok(self.expressions.append(
                     Expression::Compose {

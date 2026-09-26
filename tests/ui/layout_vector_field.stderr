@@ -1,0 +1,5 @@
+error: on the host a vector is an array, write `[f32; 3]` and the kernel will see `Vec3<f32>`
+ --> tests/ui/layout_vector_field.rs:6:15
+  |
+6 |     position: Vec3<f32>,
+  |               ^^^^^^^^^

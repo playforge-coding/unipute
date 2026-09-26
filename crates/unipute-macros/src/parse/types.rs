@@ -13,7 +13,7 @@ pub struct ParamType {
 ///
 /// `&[T]` is a read only storage buffer, `&mut [T]` is a read and write one,
 /// and anything else is a uniform.
-pub fn param_type(ty: &syn::Type) -> syn::Result<ParamType> {
+pub fn param_type(ty: &syn::Type, structs: &[ir::StructType]) -> syn::Result<ParamType> {
     match ty {
         syn::Type::Reference(reference) => {
             let access = if reference.mutability.is_some() {
@@ -23,7 +23,7 @@ pub fn param_type(ty: &syn::Type) -> syn::Result<ParamType> {
             };
             match &*reference.elem {
                 syn::Type::Slice(slice) => {
-                    let element = value_type(&slice.elem)?;
+                    let element = value_type(&slice.elem, structs)?;
                     Ok(ParamType {
                         ty: ir::Type::slice(element),
                         access,
@@ -37,14 +37,14 @@ pub fn param_type(ty: &syn::Type) -> syn::Result<ParamType> {
                         ));
                     }
                     Ok(ParamType {
-                        ty: value_type(other)?,
+                        ty: value_type(other, structs)?,
                         access: ir::Access::Uniform,
                     })
                 }
             }
         }
         other => Ok(ParamType {
-            ty: value_type(other)?,
+            ty: value_type(other, structs)?,
             access: ir::Access::Uniform,
         }),
     }
@@ -56,10 +56,10 @@ pub fn param_type(ty: &syn::Type) -> syn::Result<ParamType> {
 /// The length has to be a number written in the kernel. A `const` from the
 /// surrounding crate is not visible in here, the same as everywhere else in a
 /// kernel body.
-pub fn shared_type(ty: &syn::Type) -> syn::Result<ir::Type> {
+pub fn shared_type(ty: &syn::Type, structs: &[ir::StructType]) -> syn::Result<ir::Type> {
     match ty {
         syn::Type::Array(array) => {
-            let element = shared_type(&array.elem)?;
+            let element = shared_type(&array.elem, structs)?;
             let len = array_len(&array.len)?;
             Ok(ir::Type::Array {
                 element: Box::new(element),
@@ -70,7 +70,7 @@ pub fn shared_type(ty: &syn::Type) -> syn::Result<ir::Type> {
             ty,
             "workgroup memory needs a fixed length, write `[f32; 64]`",
         )),
-        other => value_type(other),
+        other => value_type(other, structs),
     }
 }
 
@@ -102,12 +102,13 @@ fn array_len(len: &syn::Expr) -> syn::Result<u32> {
     Ok(len)
 }
 
-/// Reads a type that describes a value, such as `f32` or `vec3<f32>`.
-pub fn value_type(ty: &syn::Type) -> syn::Result<ir::Type> {
+/// Reads a type that describes a value, such as `f32`, `Vec3<f32>` or the
+/// name of one of `structs`.
+pub fn value_type(ty: &syn::Type, structs: &[ir::StructType]) -> syn::Result<ir::Type> {
     let syn::Type::Path(path) = ty else {
         return Err(syn::Error::new_spanned(
             ty,
-            "expected a scalar such as `f32` or a vector such as `Vec3<f32>`",
+            "expected a scalar such as `f32`, a vector such as `Vec3<f32>`, or a struct",
         ));
     };
     if path.qself.is_some() {
@@ -135,13 +136,26 @@ pub fn value_type(ty: &syn::Type) -> syn::Result<ir::Type> {
 
     // Vec2, Vec3 and Vec4, with the component type in angle brackets.
     if let Some(size) = vector_size(&name) {
-        let scalar = vector_argument(segment, ty)?;
+        let scalar = vector_argument(segment, ty, structs)?;
         return Ok(ir::Type::vector(size, scalar));
+    }
+
+    if let Some(def) = structs.iter().find(|def| def.name == name) {
+        if !segment.arguments.is_empty() {
+            return Err(syn::Error::new_spanned(
+                &segment.arguments,
+                format!("`{name}` does not take type arguments"),
+            ));
+        }
+        return Ok(ir::Type::Struct(def.clone()));
     }
 
     Err(syn::Error::new_spanned(
         ty,
-        format!("`{name}` is not a type Unipute knows, use a scalar or `Vec2`, `Vec3` or `Vec4`"),
+        format!(
+            "`{name}` is not a type Unipute knows, use a scalar, `Vec2`, `Vec3` or `Vec4`, or a \
+             struct with `#[derive(unipute::Layout)]`"
+        ),
     ))
 }
 
@@ -154,7 +168,11 @@ fn vector_size(name: &str) -> Option<ir::VectorSize> {
     }
 }
 
-fn vector_argument(segment: &syn::PathSegment, ty: &syn::Type) -> syn::Result<ir::Scalar> {
+fn vector_argument(
+    segment: &syn::PathSegment,
+    ty: &syn::Type,
+    structs: &[ir::StructType],
+) -> syn::Result<ir::Scalar> {
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
         return Err(syn::Error::new_spanned(
             ty,
@@ -173,7 +191,7 @@ fn vector_argument(segment: &syn::PathSegment, ty: &syn::Type) -> syn::Result<ir
             "expected a component type",
         ));
     };
-    match value_type(argument)? {
+    match value_type(argument, structs)? {
         ir::Type::Scalar(scalar) => Ok(scalar),
         other => Err(syn::Error::new(
             argument.span(),

@@ -5,7 +5,7 @@
 
 #![cfg(feature = "wgsl")]
 
-use unipute::{Access, Kernel, WgslKernel, kernel};
+use unipute::{Access, Kernel, Layout, WgslKernel, kernel};
 
 /// The shape most compute kernels take: guard on the buffer length, then do
 /// one element of work.
@@ -137,6 +137,48 @@ fn block_sum(input: &[f32], output: &mut [f32]) {
         }
         output[workgroup_id().x] = total;
     }
+}
+
+/// A struct the kernel below reads from a buffer. `mass` fits in the four
+/// bytes after a `vec3`, so no padding is needed and the struct is 16 bytes on
+/// both sides.
+#[derive(Layout, Clone, Copy, Debug, PartialEq)]
+#[repr(C)]
+struct Particle {
+    position: [f32; 3],
+    mass: f32,
+}
+
+/// A uniform struct, declared after the kernel that uses it, since the macro
+/// that carries its fields is found by name rather than by position.
+#[derive(Layout, Clone, Copy)]
+#[repr(C)]
+struct Settings {
+    gravity: [f32; 3],
+    dt: f32,
+}
+
+/// Exercises structs: a buffer of them, a uniform one, a helper taking and
+/// returning one, member reads through an index, a struct literal, and a
+/// store to one member in place.
+#[kernel(workgroup_size(64))]
+fn fall(particles: &mut [Particle], settings: &Settings, heaviest: &mut [f32]) {
+    fn pulled(particle: Particle, gravity: Vec3<f32>, dt: f32) -> Particle {
+        Particle {
+            position: particle.position + gravity * dt,
+            mass: particle.mass,
+        }
+    }
+
+    let index = global_id().x;
+    if index >= particles.len() {
+        return;
+    }
+    particles[index] = pulled(particles[index], settings.gravity, settings.dt);
+    if particles[index].mass > heaviest[0] {
+        heaviest[0] = particles[index].mass;
+    }
+    particles[index].mass = particles[index].mass * 2.0;
 }
 
 /// Exercises explicit binding placement.
@@ -317,6 +359,47 @@ fn workgroup_memory_is_a_workgroup_variable() {
             len: Some(64),
         }
     );
+}
+
+#[test]
+fn structs_are_written_with_their_fields() {
+    let wgsl = fall::WGSL;
+
+    assert!(wgsl.contains("struct Particle {"), "{wgsl}");
+    assert!(wgsl.contains("position: vec3<f32>,"), "{wgsl}");
+    assert!(wgsl.contains("array<Particle>"), "{wgsl}");
+    assert!(wgsl.contains("var<uniform> settings: Settings"), "{wgsl}");
+    assert!(
+        wgsl.contains("fn pulled(particle: Particle, gravity: vec3<f32>, dt: f32) -> Particle"),
+        "{wgsl}"
+    );
+    assert!(wgsl.contains("].mass = "), "{wgsl}");
+}
+
+#[test]
+fn the_derive_and_the_kernel_agree_about_a_struct() {
+    let ir = fall::ir();
+
+    // What the kernel macro learned through the derive's macro is exactly
+    // what the derive itself reports, offsets included.
+    assert_eq!(ir.resources[0].ty, unipute::ir::Type::slice(Particle::ty()));
+    assert_eq!(ir.resources[1].ty, Settings::ty());
+
+    let unipute::ir::Type::Struct(def) = Particle::ty() else {
+        panic!("a derived layout is a struct");
+    };
+    assert_eq!(def.name, "Particle");
+    assert_eq!(def.members[0].offset, 0);
+    assert_eq!(def.members[1].offset, 12);
+    assert_eq!(def.size, 16);
+    assert_eq!(def.size as usize, std::mem::size_of::<Particle>());
+}
+
+#[cfg(feature = "runtime")]
+#[test]
+fn a_kernel_with_structs_survives_the_runtime_path() {
+    let regenerated = unipute::compile_text(&fall::ir(), unipute::Target::Wgsl).unwrap();
+    assert_eq!(regenerated, fall::WGSL);
 }
 
 #[cfg(feature = "runtime")]

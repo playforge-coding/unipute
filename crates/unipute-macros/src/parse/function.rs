@@ -38,18 +38,27 @@ pub struct Helpers {
 }
 
 /// Reads every nested `fn` at the top of a kernel body.
-pub fn helpers(block: &syn::Block) -> syn::Result<Helpers> {
+pub fn helpers(block: &syn::Block, structs: &[ir::StructType]) -> syn::Result<Helpers> {
     let items = collect(block)?;
     let order = order(&items)?;
 
     let mut signatures = Vec::with_capacity(order.len());
     for (id, index) in order.iter().enumerate() {
-        signatures.push(signature(items[*index], ir::FunctionId(id as u32))?);
+        signatures.push(signature(
+            items[*index],
+            ir::FunctionId(id as u32),
+            structs,
+        )?);
     }
 
     let mut functions = Vec::with_capacity(order.len());
     for (position, index) in order.iter().enumerate() {
-        functions.push(body(items[*index], &signatures[position], &signatures)?);
+        functions.push(body(
+            items[*index],
+            &signatures[position],
+            &signatures,
+            structs,
+        )?);
     }
 
     Ok(Helpers {
@@ -126,7 +135,11 @@ fn check_signature(item: &syn::ItemFn) -> syn::Result<()> {
 }
 
 /// Reads a helper's parameters and result type.
-fn signature(item: &syn::ItemFn, id: ir::FunctionId) -> syn::Result<Signature> {
+fn signature(
+    item: &syn::ItemFn,
+    id: ir::FunctionId,
+    structs: &[ir::StructType],
+) -> syn::Result<Signature> {
     let name = item.sig.ident.to_string();
 
     let mut params = Vec::new();
@@ -149,17 +162,17 @@ fn signature(item: &syn::ItemFn, id: ir::FunctionId) -> syn::Result<Signature> {
                 "a `mut` parameter is not supported, copy it into a `let` instead",
             ));
         }
-        // `value_type` only ever yields a scalar or a vector, which is exactly
-        // what a shader function can take by value.
+        // `value_type` only ever yields a scalar, a vector or a struct, which
+        // is exactly what a shader function can take by value.
         params.push(ir::Param {
             name: pattern.ident.to_string(),
-            ty: value_type(&typed.ty)?,
+            ty: value_type(&typed.ty, structs)?,
         });
     }
 
     let result = match &item.sig.output {
         syn::ReturnType::Default => None,
-        syn::ReturnType::Type(_, ty) => Some(value_type(ty)?),
+        syn::ReturnType::Type(_, ty) => Some(value_type(ty, structs)?),
     };
 
     Ok(Signature {
@@ -175,8 +188,9 @@ fn body(
     item: &syn::ItemFn,
     signature: &Signature,
     signatures: &[Signature],
+    structs: &[ir::StructType],
 ) -> syn::Result<ir::Function> {
-    let mut scope = Scope::helper(signature, signatures);
+    let mut scope = Scope::helper(signature, signatures, structs);
     let body = scope.function_body(&item.block, signature.result.as_ref())?;
 
     if signature.result.is_some() && !always_returns(&body) {

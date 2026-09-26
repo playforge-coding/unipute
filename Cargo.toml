@@ -96,6 +96,10 @@ required-features = ["wgsl"]
 name = "nbody"
 required-features = ["wgsl"]
 
+[[example]]
+name = "particles"
+required-features = ["wgsl"]
+
 # This one translates while it runs, which is what the `runtime` feature is.
 [[example]]
 name = "retarget"

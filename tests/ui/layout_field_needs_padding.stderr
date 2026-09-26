@@ -1,0 +1,5 @@
+error: `position` sits at byte 4 on the CPU and byte 16 on the GPU, add `_pad: [u8; 12]` before it
+ --> tests/ui/layout_field_needs_padding.rs:7:5
+  |
+7 |     position: [f32; 3],
+  |     ^^^^^^^^

@@ -7,7 +7,8 @@
 
 use unipute_ir::{
     Access, BarrierScope, BinaryOp, BuiltIn, Expr, Function, FunctionId, Kernel, Literal, Local,
-    LocalId, MathFn, Param, ParamId, Resource, ResourceId, Scalar, Shared, SharedId, Stmt, Type,
+    LocalId, MathFn, Param, ParamId, Resource, ResourceId, Scalar, Shared, SharedId, Stmt,
+    StructType, Type, VectorSize,
 };
 
 /// A kernel that scales one buffer into another, guarded by a bounds check.
@@ -329,6 +330,199 @@ fn block_sum_kernel() -> Kernel {
         else_branch: Vec::new(),
     });
     kernel
+}
+
+fn particle_type() -> StructType {
+    StructType::new(
+        "Particle",
+        [
+            (
+                "position".to_owned(),
+                Type::vector(VectorSize::Three, Scalar::F32),
+            ),
+            ("mass".to_owned(), Type::scalar(Scalar::F32)),
+        ],
+    )
+    .unwrap()
+}
+
+/// A kernel over a buffer of structs and a uniform struct: it reads a member
+/// through an index, reads a member of the uniform, builds a new struct and
+/// stores it back whole, and assigns to one member in place.
+fn particle_kernel() -> Kernel {
+    let particle = particle_type();
+    let settings = StructType::new(
+        "Settings",
+        [
+            (
+                "gravity".to_owned(),
+                Type::vector(VectorSize::Three, Scalar::F32),
+            ),
+            ("dt".to_owned(), Type::scalar(Scalar::F32)),
+        ],
+    )
+    .unwrap();
+
+    let mut kernel = Kernel::new("integrate", [64, 1, 1]);
+    kernel.resources.push(Resource {
+        name: "particles".to_owned(),
+        group: 0,
+        binding: 0,
+        ty: Type::slice(Type::Struct(particle.clone())),
+        access: Access::ReadWrite,
+    });
+    kernel.resources.push(Resource {
+        name: "settings".to_owned(),
+        group: 0,
+        binding: 1,
+        ty: Type::Struct(settings),
+        access: Access::Uniform,
+    });
+    kernel.locals.push(Local {
+        name: "index".to_owned(),
+        ty: Type::scalar(Scalar::U32),
+    });
+
+    let index = LocalId(0);
+    let element = || Expr::Index {
+        base: Box::new(Expr::Resource(ResourceId(0))),
+        index: Box::new(Expr::Local(index)),
+    };
+    kernel.body.push(Stmt::Declare {
+        local: index,
+        value: Some(Expr::Component {
+            base: Box::new(Expr::BuiltIn(BuiltIn::GlobalInvocationId)),
+            index: 0,
+        }),
+    });
+    // particles[index] = Particle { position: particles[index].position + settings.gravity, mass: particles[index].mass }
+    kernel.body.push(Stmt::Store {
+        place: element(),
+        value: Expr::Construct {
+            ty: particle,
+            members: vec![
+                Expr::Binary {
+                    op: BinaryOp::Add,
+                    lhs: Box::new(Expr::Member {
+                        base: Box::new(element()),
+                        index: 0,
+                    }),
+                    rhs: Box::new(Expr::Member {
+                        base: Box::new(Expr::Resource(ResourceId(1))),
+                        index: 0,
+                    }),
+                },
+                Expr::Member {
+                    base: Box::new(element()),
+                    index: 1,
+                },
+            ],
+        },
+    });
+    // particles[index].mass = settings.dt
+    kernel.body.push(Stmt::Store {
+        place: Expr::Member {
+            base: Box::new(element()),
+            index: 1,
+        },
+        value: Expr::Member {
+            base: Box::new(Expr::Resource(ResourceId(1))),
+            index: 1,
+        },
+    });
+    kernel
+}
+
+#[test]
+fn structs_are_declared_with_their_members() {
+    let wgsl = unipute_naga::compile_wgsl(&particle_kernel()).unwrap();
+
+    assert!(wgsl.contains("struct Particle {"), "{wgsl}");
+    assert!(wgsl.contains("position: vec3<f32>,"), "{wgsl}");
+    assert!(wgsl.contains("mass: f32,"), "{wgsl}");
+    assert!(wgsl.contains("array<Particle>"), "{wgsl}");
+    assert!(wgsl.contains("var<uniform> settings: Settings"), "{wgsl}");
+    // Building a struct comes out as a constructor call, and a member store
+    // as an assignment through the index.
+    assert!(wgsl.contains("Particle("), "{wgsl}");
+    assert!(wgsl.contains("].mass = "), "{wgsl}");
+}
+
+#[test]
+fn a_struct_with_the_wrong_offsets_is_rejected() {
+    let mut kernel = particle_kernel();
+    let Type::Array { element, .. } = &mut kernel.resources[0].ty else {
+        unreachable!("the first resource is a buffer");
+    };
+    let Type::Struct(def) = &mut **element else {
+        unreachable!("the buffer holds structs");
+    };
+    // `mass` fits in the gap after a `vec3`, at byte 12. Pushing it out to 16
+    // is a layout naga's writers would each handle their own way.
+    def.members[1].offset = 16;
+    def.size = 32;
+
+    let error = unipute_naga::compile_wgsl(&kernel).unwrap_err();
+    assert!(error.to_string().contains("at byte 16"), "{error}");
+    assert!(error.to_string().contains("byte 12"), "{error}");
+}
+
+#[test]
+fn a_struct_with_the_wrong_size_is_rejected() {
+    let mut kernel = particle_kernel();
+    let Type::Struct(def) = &mut kernel.resources[1].ty else {
+        unreachable!("the second resource is a uniform struct");
+    };
+    def.size = 20;
+
+    let error = unipute_naga::compile_wgsl(&kernel).unwrap_err();
+    assert!(error.to_string().contains("20 bytes"), "{error}");
+}
+
+#[test]
+fn constructing_a_struct_needs_every_member() {
+    let mut kernel = particle_kernel();
+    let Stmt::Store { value, .. } = &mut kernel.body[1] else {
+        unreachable!("the second statement stores a new struct");
+    };
+    let Expr::Construct { members, .. } = value else {
+        unreachable!("the value is a struct literal");
+    };
+    members.pop();
+
+    let error = unipute_naga::compile_wgsl(&kernel).unwrap_err();
+    assert!(error.to_string().contains("2 members"), "{error}");
+}
+
+#[cfg(feature = "msl")]
+#[test]
+fn msl_packs_a_vec3_that_has_a_member_after_it() {
+    // Metal's `float3` is 16 bytes, so `mass` at byte 12 needs the packed
+    // form of the vector. Naga writes it, and this is here to notice if that
+    // ever changes.
+    let msl = unipute_naga::compile_msl(&particle_kernel()).unwrap();
+    assert!(msl.contains("packed_float3 position"), "{msl}");
+}
+
+#[cfg(feature = "hlsl")]
+#[test]
+fn hlsl_writes_the_struct() {
+    let hlsl = unipute_naga::compile_hlsl(&particle_kernel()).unwrap();
+    assert!(hlsl.contains("struct Particle {"), "{hlsl}");
+}
+
+#[cfg(feature = "glsl")]
+#[test]
+fn glsl_writes_the_struct() {
+    let glsl = unipute_naga::compile_glsl(&particle_kernel()).unwrap();
+    assert!(glsl.contains("struct Particle {"), "{glsl}");
+}
+
+#[cfg(feature = "spv")]
+#[test]
+fn spirv_takes_the_struct() {
+    let words = unipute_naga::compile_spirv(&particle_kernel()).unwrap();
+    assert_eq!(words.first(), Some(&0x0723_0203));
 }
 
 #[test]

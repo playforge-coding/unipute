@@ -1,0 +1,5 @@
+error: `Particle` is missing `position`, a struct literal in a kernel writes every field
+  --> tests/ui/struct_literal_missing_field.rs:12:20
+   |
+12 |     particles[0] = Particle { mass: 1.0 };
+   |                    ^^^^^^^^^^^^^^^^^^^^^^

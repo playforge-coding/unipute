@@ -48,6 +48,26 @@ Step 4 is the unusual one. The shader compiler runs inside the proc macro, so
 the finished shader is a string literal in your crate by the time your code is
 type checked.
 
+## How a kernel learns about a struct
+
+A proc macro sees the one item it is attached to. When a kernel names a
+struct, the fields are on a different item, and the macro cannot go and read
+it. So `#[derive(Layout)]` does the reading, and leaves a small `macro_rules!`
+next to the struct, under the struct's own name, holding the fields.
+
+When `#[kernel]` meets a name it does not know, it does not expand to a kernel
+at all. It expands to a call of that macro, handing along the whole function.
+The macro adds the struct's fields and calls back into Unipute, which either
+asks about the next unknown name the same way or, once it has them all, runs
+the five steps above. Every token of your function is passed through
+untouched, so errors still point at the line you wrote.
+
+Two things follow. A struct and the kernels using it have to be in the same
+crate, since the macro the derive leaves behind is not something a crate can
+re-export. And a type that has no derive gets two errors: one that the macro
+under its name could not be found, and one from the `Layout` trait saying what
+to do about it.
+
 ## Why your function disappears
 
 A kernel is not a function your CPU can call. It describes work for a

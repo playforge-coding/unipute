@@ -130,10 +130,29 @@ Lengths and indices are `u32`, not `usize`. There is no `usize` on a GPU. If
 you are comparing a `.len()` against something, make sure both sides are
 `u32`.
 
-### `X is not a type Unipute knows, use a scalar or Vec2, Vec3 or Vec4`
+### `cannot find macro X in this scope`, followed by `X cannot be used in a kernel`
 
-The type list is short on purpose. See [Types](./kernels/types.md) for what is
-there. `f64`, `u64`, `u8` and `usize` are all deliberately absent.
+The kernel names a type Unipute does not know. If `X` is a struct of yours,
+put `#[derive(unipute::Layout)]` on it, and make sure it is in the same crate
+as the kernel. If it is anything else, the type list is short on purpose: see
+[Types](./kernels/types.md) for what is there. `f64`, `u64`, `u8` and `usize`
+are all deliberately absent.
+
+The first of the two errors is how the kernel macro asks a struct for its
+fields, which [How it works](./how-it-works.md#how-a-kernel-learns-about-a-struct)
+explains. The second one is the useful message.
+
+### `X sits at byte 4 on the CPU and byte 16 on the GPU, add _pad: [u8; 12] before it`
+
+Rust and the GPU lay the struct out differently, almost always because a three
+component vector follows a scalar. Add the padding field the message names,
+or move the vector before the scalar. [Your own
+structs](./kernels/structs.md#where-the-bytes-go) has the rules.
+
+### `X needs #[repr(C)], so that its fields sit where the kernel expects them`
+
+Add it. Without it Rust may reorder the fields, and then nothing about where
+they are can be relied on.
 
 ## Bindings
 

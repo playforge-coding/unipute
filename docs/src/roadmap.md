@@ -5,11 +5,11 @@ here is the list.
 
 ## What does work
 
-Compute kernels, end to end, across WGSL, SPIR-V, MSL, HLSL and GLSL. Scalars
-and vectors, storage buffers and uniforms, the control flow in [Control
-flow](./kernels/control-flow.md), the functions in [Built-ins and
-functions](./kernels/builtins.md), the nested functions in [Your own
-functions](./kernels/functions.md), [workgroup
+Compute kernels, end to end, across WGSL, SPIR-V, MSL, HLSL and GLSL. Scalars,
+vectors and [your own structs](./kernels/structs.md), storage buffers and
+uniforms, the control flow in [Control flow](./kernels/control-flow.md), the
+functions in [Built-ins and functions](./kernels/builtins.md), the nested
+functions in [Your own functions](./kernels/functions.md), [workgroup
 memory](./kernels/workgroup-memory.md) and barriers, and binding layout you
 can read from the host.
 
@@ -24,14 +24,20 @@ Fixing this needs a surface `#[kernel]` does not have, because a macro attached
 to one function cannot read another one. The likely shape is a module level
 macro wrapping several kernels and their shared helpers at once.
 
-## Structs in buffers
+## The rest of structs
 
-Buffers hold scalars and vectors. A buffer of your own struct type is not
-available, so a struct of three fields means three parallel buffers.
+A struct's fields are scalars and vectors. A struct holding another struct, or
+an array, is refused by the derive. The IR and the naga back end can already
+represent both, so the missing piece is the derive working out the host
+layout for them, and the uniform rules, which put stricter alignment on a
+nested struct than a storage buffer does.
 
-Naga supports structs. The IR needs a `Type::Struct` variant carrying explicit
-layout, since the host and the shader have to agree byte for byte, and getting
-that wrong silently is worse than not offering it.
+A struct has to be in the same crate as the kernels that name it. The kernel
+macro learns a struct's fields through a `macro_rules!` the derive leaves next
+to it, and that is the one kind of item Rust will not let a crate re-export by
+path. A struct from a dependency would need another way of handing the fields
+over, which is the same question the serialised IR under [Other
+languages](#other-languages) answers.
 
 ## Atomics
 
@@ -96,8 +102,8 @@ not there.
 
 ## How to read this list
 
-Everything here is a gap rather than a decision against. The ones with the
-clearest path are structs and atomics, since naga already supports both.
+Everything here is a gap rather than a decision against. The one with the
+clearest path is atomics, since naga already supports them.
 
 If one of these is blocking you, saying so is useful. It is easier to
 prioritise against a real kernel someone is trying to write than against a

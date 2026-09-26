@@ -131,6 +131,13 @@ If Unipute genuinely cannot work out a type it says so rather than guessing:
 error: the type of this value is unclear, annotate it as in `let x: f32 = ...`
 ```
 
+## Structs
+
+A struct you define, with `#[derive(Layout)]` on it, can be a buffer element,
+a uniform, a local, or a parameter of a nested function. Its fields are read
+with `.name`. [Your own structs](./structs.md) is the chapter on them, and on
+the one thing to know about their layout.
+
 ## Arrays with a fixed length
 
 `[T; N]` is the type of [workgroup memory](./workgroup-memory.md), and that is
@@ -139,7 +146,7 @@ buffer is always a slice, since its length is the host's decision.
 
 ## What is not here yet
 
-Matrices, atomics, textures, samplers and your own structs. All of them are on
-the list, and [What is not built yet](../roadmap.md) says roughly what each
-one needs. If you hit one of these, that chapter is the honest answer rather
-than a workaround.
+Matrices, atomics, textures and samplers. All of them are on the list, and
+[What is not built yet](../roadmap.md) says roughly what each one needs. If
+you hit one of these, that chapter is the honest answer rather than a
+workaround.

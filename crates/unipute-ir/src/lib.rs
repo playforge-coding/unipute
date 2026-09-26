@@ -43,4 +43,4 @@ pub use expr::{
     ResourceId, SharedId, Stmt, UnaryOp,
 };
 pub use kernel::{Access, Function, Kernel, Local, Param, Resource, Shared, Stage};
-pub use types::{Scalar, Type, VectorSize};
+pub use types::{Scalar, StructMember, StructType, Type, VectorSize, round_up};

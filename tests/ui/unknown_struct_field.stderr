@@ -1,0 +1,5 @@
+error: `Particle` has no field `weight`
+  --> tests/ui/unknown_struct_field.rs:12:30
+   |
+12 |     output[0] = particles[0].weight;
+   |                              ^^^^^^

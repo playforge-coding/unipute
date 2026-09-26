@@ -5,7 +5,7 @@ The repository has a set of runnable examples in
 Each one is about a different part of the job, so between them they cover most
 of what this book describes.
 
-Three of them run their kernels on a GPU and check the answer. Unipute stops at
+Four of them run their kernels on a GPU and check the answer. Unipute stops at
 the shader, so the wgpu code that takes it from there lives in
 [`examples/host/mod.rs`](https://github.com/playforge-coding/unipute/blob/main/examples/host/mod.rs),
 shared by those examples and by the GPU tests. It is the [Running a
@@ -72,6 +72,24 @@ total momentum is printed as the simulation goes, since every pull has an
 equal and opposite one and the physics says it should not change. Packing
 position and mass into one `Vec4` is the sort of thing that matters in a
 kernel that reads every body once per invocation.
+
+## particles
+
+Structs in buffers, from the host to the kernel and back.
+
+```bash
+cargo run --example particles
+```
+
+A particle system where each particle is one `#[repr(C)]` struct with
+`#[derive(Layout)]` on it, held in a single buffer, and the settings for a
+step are another struct bound as a uniform. The kernel reads fields through
+an index, passes a whole particle to a helper and writes the one it gets back.
+The two structs between them show the one layout rule worth knowing: a three
+component vector wants a scalar after it, and where that is not possible a
+padding field makes up the difference. The first step is checked against the
+same maths on the CPU, and the host counts the particles still alive as the
+steps go by.
 
 ## inspect_ir
 

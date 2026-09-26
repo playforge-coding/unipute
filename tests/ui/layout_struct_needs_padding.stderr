@@ -1,0 +1,5 @@
+error: `Weighted` is 28 bytes on the CPU and 32 on the GPU, add `_pad2: [u8; 4]` as its last field
+ --> tests/ui/layout_struct_needs_padding.rs:5:8
+  |
+5 | struct Weighted {
+  |        ^^^^^^^^

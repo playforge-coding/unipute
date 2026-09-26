@@ -78,8 +78,8 @@ rest of the book has given it some context.
 If you want to try it, start with [Installing](./start/installing.md) and then
 [Your first kernel](./start/first-kernel.md).
 
-If you want to know what a kernel is allowed to contain, the four chapters
-under "Writing kernels" are the reference, and
+If you want to know what a kernel is allowed to contain, the chapters under
+"Writing kernels" are the reference, and
 [Control flow](./kernels/control-flow.md) is probably the one with the most
 surprises in it.
 

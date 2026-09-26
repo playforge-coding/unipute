@@ -16,7 +16,8 @@
 mod host;
 
 use host::{Gpu, Pipeline};
-use unipute::{Kernel, kernel};
+use unipute::{Kernel, Layout, kernel};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 /// A device for one test. Opening one is cheap enough that each test has its
 /// own, which keeps them independent.
@@ -423,6 +424,180 @@ fn a_shared_scalar_broadcasts_within_the_workgroup() {
     gpu.dispatch(&pipeline, &[&input_buffer, &output_buffer], groups);
 
     assert_eq!(gpu.read::<f32>(&output_buffer), expected);
+}
+
+/// A particle as both sides see it. `mass` sits in the four bytes after the
+/// twelve of `position`, which is the one place a `vec3` does not take
+/// sixteen, and `velocity` then starts at the next multiple of 16. No padding
+/// is needed and the struct is 32 bytes on both sides.
+#[derive(Layout, Clone, Copy, Debug, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[repr(C)]
+struct Particle {
+    position: [f32; 3],
+    mass: f32,
+    velocity: [f32; 3],
+    lifetime: f32,
+}
+
+#[derive(Layout, Clone, Copy, IntoBytes, Immutable)]
+#[repr(C)]
+struct Settings {
+    gravity: [f32; 3],
+    dt: f32,
+}
+
+/// One integration step: velocity picks up gravity, position picks up
+/// velocity, and the lifetime counts down in place.
+#[kernel(workgroup_size(64))]
+fn integrate(particles: &mut [Particle], settings: &Settings) {
+    fn moved(particle: Particle, gravity: Vec3<f32>, dt: f32) -> Particle {
+        let velocity = particle.velocity + gravity * dt;
+        Particle {
+            position: particle.position + velocity * dt,
+            mass: particle.mass,
+            velocity,
+            lifetime: particle.lifetime,
+        }
+    }
+
+    let index = global_id().x;
+    if index >= particles.len() {
+        return;
+    }
+    particles[index] = moved(particles[index], settings.gravity, settings.dt);
+    particles[index].lifetime -= settings.dt;
+}
+
+#[test]
+fn a_buffer_of_structs_round_trips_through_the_gpu() {
+    let Some(gpu) = gpu() else { return };
+
+    let particles: Vec<Particle> = (0..100)
+        .map(|i| Particle {
+            position: [i as f32, 0.0, -(i as f32)],
+            mass: 1.0 + i as f32 * 0.5,
+            velocity: [0.0, i as f32 * 0.1, 0.0],
+            lifetime: 10.0,
+        })
+        .collect();
+    let settings = Settings {
+        gravity: [0.0, -9.8, 0.0],
+        dt: 0.5,
+    };
+    let expected: Vec<Particle> = particles
+        .iter()
+        .map(|particle| {
+            let mut velocity = particle.velocity;
+            for axis in 0..3 {
+                velocity[axis] += settings.gravity[axis] * settings.dt;
+            }
+            let mut position = particle.position;
+            for axis in 0..3 {
+                position[axis] += velocity[axis] * settings.dt;
+            }
+            Particle {
+                position,
+                mass: particle.mass,
+                velocity,
+                lifetime: particle.lifetime - settings.dt,
+            }
+        })
+        .collect();
+
+    let pipeline = gpu.pipeline::<integrate>();
+    let particle_buffer = gpu.storage(&particles);
+    let settings_buffer = gpu.uniform(&settings);
+    let groups = host::workgroups([particles.len() as u32, 1, 1], integrate::WORKGROUP_SIZE);
+    gpu.dispatch(&pipeline, &[&particle_buffer, &settings_buffer], groups);
+
+    assert_eq!(gpu.read::<Particle>(&particle_buffer), expected);
+}
+
+/// A struct that needs padding on the host to match the GPU: a `vec3` after
+/// a scalar starts at byte 16, and the whole thing is padded to 32.
+#[derive(Layout, Clone, Copy, IntoBytes, Immutable)]
+#[repr(C)]
+struct Weighted {
+    mass: f32,
+    _pad: [u8; 12],
+    position: [f32; 3],
+    _pad2: [u8; 4],
+}
+
+/// Reads through the padding: if the offsets were wrong on either side, the
+/// sum would pick up padding bytes or the wrong field.
+#[kernel(workgroup_size(64))]
+fn weigh(weighted: &[Weighted], output: &mut [f32]) {
+    let index = global_id().x;
+    if index >= weighted.len() {
+        return;
+    }
+    let item = weighted[index];
+    output[index] = item.mass * (item.position.x + item.position.y + item.position.z);
+}
+
+#[test]
+fn padding_puts_fields_where_the_kernel_reads_them() {
+    let Some(gpu) = gpu() else { return };
+
+    let items: Vec<Weighted> = (0..70)
+        .map(|i| Weighted {
+            mass: i as f32,
+            _pad: [0xAB; 12],
+            position: [1.0, 2.0, i as f32],
+            _pad2: [0xCD; 4],
+        })
+        .collect();
+    let expected: Vec<f32> = items
+        .iter()
+        .map(|item| item.mass * (item.position[0] + item.position[1] + item.position[2]))
+        .collect();
+
+    let pipeline = gpu.pipeline::<weigh>();
+    let input_buffer = gpu.storage(&items);
+    let output_buffer = gpu.storage(&vec![0.0f32; items.len()]);
+    let groups = host::workgroups([items.len() as u32, 1, 1], weigh::WORKGROUP_SIZE);
+    gpu.dispatch(&pipeline, &[&input_buffer, &output_buffer], groups);
+
+    assert_eq!(gpu.read::<f32>(&output_buffer), expected);
+}
+
+/// A uniform struct smaller than sixteen bytes, and one of integers.
+#[derive(Layout, Clone, Copy, IntoBytes, Immutable)]
+#[repr(C)]
+struct Grid {
+    width: u32,
+    height: u32,
+}
+
+#[kernel(workgroup_size(8, 8))]
+fn number_cells(output: &mut [u32], grid: &Grid) {
+    let cell = global_id();
+    if cell.x >= grid.width || cell.y >= grid.height {
+        return;
+    }
+    output[cell.y * grid.width + cell.x] = cell.y * 100u32 + cell.x;
+}
+
+#[test]
+fn a_small_uniform_struct_is_read_whole() {
+    let Some(gpu) = gpu() else { return };
+
+    let grid = Grid {
+        width: 13,
+        height: 5,
+    };
+    let expected: Vec<u32> = (0..grid.height)
+        .flat_map(|y| (0..grid.width).map(move |x| y * 100 + x))
+        .collect();
+
+    let pipeline = gpu.pipeline::<number_cells>();
+    let output_buffer = gpu.storage(&vec![0u32; expected.len()]);
+    let grid_buffer = gpu.uniform(&grid);
+    let groups = host::workgroups([grid.width, grid.height, 1], number_cells::WORKGROUP_SIZE);
+    gpu.dispatch(&pipeline, &[&output_buffer, &grid_buffer], groups);
+
+    assert_eq!(gpu.read::<u32>(&output_buffer), expected);
 }
 
 /// A second bind group. `amount` takes index 2 rather than 0 so that its

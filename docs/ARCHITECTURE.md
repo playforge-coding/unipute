@@ -166,13 +166,65 @@ of preparation worth doing before anyone starts.
 The front end covers a useful subset and rejects the rest with a message. The
 pieces most likely to be wanted next, in rough order of value:
 
-- User defined structs as buffer element types. Naga supports them and the IR
-  needs a `Type::Struct` variant with explicit layout.
 - Atomics, which naga has as `TypeInner::Atomic` and `Statement::Atomic`.
+- Structs nested in structs, and arrays as struct fields. The IR and the back
+  end take both already; the derive does not, see [Structs](#structs).
 - Textures and samplers, which mostly matter once graphics stages land.
 
 Calling other functions is done, as nested `fn` items inside a kernel body.
 See [Functions](#functions) below for the shape of it and what is left.
+User defined structs are done too, and [Structs](#structs) is about how a
+macro on one item came to know about another.
+
+## Structs
+
+`Type::Struct` carries a `StructType`: a name, members with explicit byte
+offsets, and a size. The offsets are redundant in the sense that
+`StructType::new` computes them from the member types by the rules in
+`Type::alignment`, and that redundancy is deliberate. A host reading the IR
+should not need to know the rules, and a back end should not trust a front
+end to have followed them, so `unipute-naga` recomputes the layout and refuses
+a struct whose offsets differ. Naga's writers lay a struct out by their own
+reckoning and only the SPIR-V one reads offsets back, so an unusual layout
+would come out five different ways rather than one wrong way.
+
+The rules are the ones WGSL, SPIR-V, MSL and HLSL share for a storage buffer:
+scalars 4 bytes aligned to 4, `vec2` 8 aligned to 8, `vec3` 12 aligned to 16,
+`vec4` 16 aligned to 16, each member at the next multiple of its alignment,
+the struct rounded up to its largest. For a uniform the same rules hold as
+long as no member is itself a struct or an array, which is why the derive
+stops there for now: a nested struct in a uniform needs 16 byte alignment
+that a storage buffer does not, and one `StructType` cannot carry both.
+
+**How `#[kernel]` learns the fields.** A proc macro sees the item it is on
+and nothing else. `#[derive(Layout)]` therefore leaves a `macro_rules!` next
+to the struct, holding its fields, and re-exports it under the struct's own
+name with `pub(crate) use`. A macro and a type live in different namespaces,
+so the two do not collide, and a `use` of the struct brings the macro along.
+When `#[kernel]` finds a type name it does not know, it expands to a call of
+that macro, passing the names still unknown, the definitions gathered so far,
+the attribute and the whole function. The macro adds its struct and calls
+`unipute::__kernel_with_layouts`, which repeats until nothing is pending and
+then expands the kernel for real. `crates/unipute-macros/src/chain.rs` is the
+whole of it, and `layout.rs` is the derive.
+
+Two consequences are worth knowing. A `macro_rules!` without `#[macro_export]`
+cannot be `pub use`d out of its crate, and one with it lands at the crate root
+where a macro expanded macro cannot be reached by path (the
+`macro_expanded_macro_exports_accessed_by_absolute_paths` lint), so a struct
+and the kernels naming it have to share a crate. And a name that is not a
+`Layout` struct fails as "cannot find macro", which is why the kernel macro
+also emits a `Layout` trait bound on every unknown name: the trait's
+`on_unimplemented` message is the one that says what to do.
+
+**Host layout.** The derive computes the `#[repr(C)]` layout from the same
+syntax, compares the two, and reports the first field that differs, with the
+padding field that would fix it. It emits `offset_of!` and `size_of`
+assertions as well, so a mistake in that computation would fail the build
+rather than pass silently. Vectors are spelled as arrays on the host,
+`[f32; 3]` for `Vec3<f32>`, because a host type with the GPU's alignment
+would need a size Rust cannot give it: a `vec3` is 12 bytes aligned to 16,
+and in Rust size is always a multiple of alignment.
 
 ## Functions
 

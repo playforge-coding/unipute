@@ -35,6 +35,9 @@ pub struct Scope<'a> {
     functions: &'a [Signature],
     /// The helper being read, or `None` in the kernel body.
     helper: Option<&'a Signature>,
+    /// The structs this kernel may name, gathered from their `Layout`
+    /// derives before the macro got here.
+    structs: &'a [ir::StructType],
     /// The workgroup memory declared so far. Only the kernel body adds to it,
     /// since it belongs to the entry point the way resources do.
     shared: Vec<ir::Shared>,
@@ -47,11 +50,16 @@ pub struct Scope<'a> {
 }
 
 impl<'a> Scope<'a> {
-    fn entry(resources: &'a [ir::Resource], functions: &'a [Signature]) -> Self {
+    fn entry(
+        resources: &'a [ir::Resource],
+        functions: &'a [Signature],
+        structs: &'a [ir::StructType],
+    ) -> Self {
         Self {
             resources,
             functions,
             helper: None,
+            structs,
             shared: Vec::new(),
             locals: Vec::new(),
             frames: vec![HashMap::new()],
@@ -60,7 +68,11 @@ impl<'a> Scope<'a> {
     }
 
     /// A scope for a helper's body, with its parameters already in it.
-    fn helper(helper: &'a Signature, functions: &'a [Signature]) -> Self {
+    fn helper(
+        helper: &'a Signature,
+        functions: &'a [Signature],
+        structs: &'a [ir::StructType],
+    ) -> Self {
         let mut frame = HashMap::new();
         for (index, param) in helper.params.iter().enumerate() {
             frame.insert(
@@ -75,6 +87,7 @@ impl<'a> Scope<'a> {
             resources: &[],
             functions,
             helper: Some(helper),
+            structs,
             shared: Vec::new(),
             locals: Vec::new(),
             frames: vec![frame],
@@ -94,6 +107,12 @@ impl<'a> Scope<'a> {
     fn function_named(&self, name: &str) -> Option<&'a Signature> {
         let functions: &'a [Signature] = self.functions;
         functions.iter().find(|signature| signature.name == name)
+    }
+
+    /// Looks a struct up by name, for a struct literal.
+    fn struct_named(&self, name: &str) -> Option<&'a ir::StructType> {
+        let structs: &'a [ir::StructType] = self.structs;
+        structs.iter().find(|def| def.name == name)
     }
 
     fn define(&mut self, name: String, binding: Binding) {
@@ -136,7 +155,15 @@ impl<'a> Scope<'a> {
 }
 
 /// Reads a whole `#[kernel]` function into a [`ir::Kernel`].
-pub fn kernel(attr: &KernelAttr, function: &syn::ItemFn) -> syn::Result<ir::Kernel> {
+///
+/// `structs` are the ones the kernel may name, already laid out. They come
+/// from `#[derive(Layout)]` on each struct, by way of the chain in
+/// `chain.rs`.
+pub fn kernel(
+    attr: &KernelAttr,
+    function: &syn::ItemFn,
+    structs: &[ir::StructType],
+) -> syn::Result<ir::Kernel> {
     check_signature(function)?;
 
     let name = attr
@@ -147,7 +174,7 @@ pub fn kernel(attr: &KernelAttr, function: &syn::ItemFn) -> syn::Result<ir::Kern
 
     let mut resources = Vec::new();
     for (index, argument) in function.sig.inputs.iter().enumerate() {
-        resources.push(resource(argument, index)?);
+        resources.push(resource(argument, index, structs)?);
     }
     check_unique_bindings(&resources, &function.sig)?;
     kernel.resources = resources
@@ -158,10 +185,10 @@ pub fn kernel(attr: &KernelAttr, function: &syn::ItemFn) -> syn::Result<ir::Kern
     // Nested `fn` items become helper functions. Their signatures are read
     // before any body is, so that two helpers can call each other whichever
     // order they were written in.
-    let helpers = function::helpers(&function.block)?;
+    let helpers = function::helpers(&function.block, structs)?;
     kernel.functions = helpers.functions;
 
-    let mut scope = Scope::entry(&kernel.resources, &helpers.signatures);
+    let mut scope = Scope::entry(&kernel.resources, &helpers.signatures, structs);
     for (index, (resource, name)) in resources.iter().enumerate() {
         scope.define(
             name.clone(),
@@ -208,7 +235,11 @@ fn check_signature(function: &syn::ItemFn) -> syn::Result<()> {
 }
 
 /// Reads one parameter into a resource, returning it with the name it binds.
-fn resource(argument: &syn::FnArg, index: usize) -> syn::Result<(ir::Resource, String)> {
+fn resource(
+    argument: &syn::FnArg,
+    index: usize,
+    structs: &[ir::StructType],
+) -> syn::Result<(ir::Resource, String)> {
     let syn::FnArg::Typed(typed) = argument else {
         return Err(syn::Error::new_spanned(
             argument,
@@ -222,7 +253,7 @@ fn resource(argument: &syn::FnArg, index: usize) -> syn::Result<(ir::Resource, S
         ));
     };
     let name = pattern.ident.to_string();
-    let parsed = param_type(&typed.ty)?;
+    let parsed = param_type(&typed.ty, structs)?;
     let placement = crate::attr::binding_placement(&typed.attrs, index)?;
 
     Ok((
