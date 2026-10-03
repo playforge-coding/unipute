@@ -16,7 +16,7 @@ the wrong shape.
 
 ```toml
 [dependencies]
-unipute = { version = "0.1", features = ["runtime", "spv", "msl"] }
+unipute = { version = "0.2", features = ["runtime", "spv", "msl"] }
 ```
 
 The `runtime` feature pulls in the naga backend as a normal dependency rather

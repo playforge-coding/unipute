@@ -1,6 +1,6 @@
 # What is not built yet
 
-This is version 0.1. Rather than let you find the edges by walking into them,
+This is version 0.2. Rather than let you find the edges by walking into them,
 here is the list.
 
 ## What does work

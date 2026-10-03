@@ -16,7 +16,7 @@ do not want it.
 
 ```toml
 [dependencies]
-unipute = { version = "0.1", features = ["spv", "msl"] }
+unipute = { version = "0.2", features = ["spv", "msl"] }
 ```
 
 ## Getting at the constant

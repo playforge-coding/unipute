@@ -1,6 +1,6 @@
 [package]
 name = "unipute"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "A compile time generating, language and graphics API agnostic GPU library"
@@ -13,7 +13,7 @@ categories = ["graphics", "rendering"]
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/playforge-coding/unipute"
@@ -23,10 +23,10 @@ naga = "30.0.1"
 proc-macro2 = "1.0.107"
 quote = "1.0.42"
 syn = "3.0.6"
-unipute-ir = { version = "0.1.0", path = "crates/unipute-ir" }
-unipute-macros = { version = "0.1.0", path = "crates/unipute-macros" }
+unipute-ir = { version = "0.2.0", path = "crates/unipute-ir" }
+unipute-macros = { version = "0.2.0", path = "crates/unipute-macros" }
 # Targets are opted into by feature, so members never inherit the default one.
-unipute-naga = { version = "0.1.0", path = "crates/unipute-naga", default-features = false }
+unipute-naga = { version = "0.2.0", path = "crates/unipute-naga", default-features = false }
 
 [features]
 default = ["wgsl"]

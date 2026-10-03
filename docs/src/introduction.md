@@ -88,7 +88,7 @@ If you are wondering whether Unipute can do the thing you need,
 
 ## A note on maturity
 
-This is version 0.1. Compute kernels work end to end across five shader
+This is version 0.2. Compute kernels work end to end across five shader
 languages, and that part is tested. Graphics stages, backends other than naga,
 and bindings for languages other than Rust are designed for and not built. The
 roadmap chapter says what each one would take.

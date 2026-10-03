@@ -4,7 +4,7 @@ Add Unipute to your crate:
 
 ```toml
 [dependencies]
-unipute = "0.1"
+unipute = "0.2"
 ```
 
 That gives you WGSL. Every other language is a feature, and you can turn on as
@@ -12,7 +12,7 @@ many as you like:
 
 ```toml
 [dependencies]
-unipute = { version = "0.1", features = ["spv", "msl"] }
+unipute = { version = "0.2", features = ["spv", "msl"] }
 ```
 
 | Feature | Language |

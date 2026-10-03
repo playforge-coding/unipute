@@ -84,7 +84,7 @@ failure from a shader compiler.
 
 ```toml
 [dependencies]
-unipute = "0.1"
+unipute = "0.2"
 ```
 
 ## Targets
@@ -101,7 +101,7 @@ in your crate. `wgsl` is on by default.
 | `glsl`  | `GlslKernel`  | `GLSL: &str`       |
 
 ```toml
-unipute = { version = "0.1", features = ["spv", "msl"] }
+unipute = { version = "0.2", features = ["spv", "msl"] }
 ```
 
 To see them all for one kernel:

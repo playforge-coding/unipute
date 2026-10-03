@@ -12,7 +12,7 @@ Kernels use a small set of types. This chapter is the whole list.
 | `bool` | conditions only, not something you put in a buffer |
 
 There is no `f64`, no `u64`, no `usize` and no `u8`. GPUs either do not have
-them or make you ask for an extension, and a version 0.1 that quietly picks
+them or make you ask for an extension, and a version 0.2 that quietly picks
 for you would be worse than one that says no.
 
 `usize` is the one people reach for out of habit. Lengths and indices are
