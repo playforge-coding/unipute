@@ -1,5 +1,5 @@
 //! Vector types end to end: buffers of them, helpers that take and return
-//! them, and the built-in maths that goes with them.
+//! them, swizzles, and the built-in maths that goes with them.
 //!
 //! A direct n-body simulation. Every body is pulled on by every other one, so
 //! each invocation reads the whole position buffer and writes a single
@@ -44,7 +44,7 @@ fn step_bodies(
     /// turns that into a body flung off the screen. Adding `softening` to the
     /// squared distance rounds the peak off.
     fn pull(body: Vec4<f32>, other: Vec4<f32>, softening: f32) -> Vec3<f32> {
-        let offset = vec3(other.x - body.x, other.y - body.y, other.z - body.z);
+        let offset = other.xyz - body.xyz;
         let distance_squared = dot(offset, offset) + softening * softening;
         let inverse_distance = inverse_sqrt(distance_squared);
         // Mass over distance squared, times the unit vector towards `other`,
@@ -70,26 +70,15 @@ fn step_bodies(
         acceleration = acceleration + pull(body, bodies[other], softening);
     }
 
-    let velocity = velocities[index];
-    let moved_velocity = vec3(
-        velocity.x + acceleration.x * dt,
-        velocity.y + acceleration.y * dt,
-        velocity.z + acceleration.z * dt,
-    );
+    // Assigning to `xyz` leaves `w` alone, which is how the mass rides along
+    // untouched.
+    let mut velocity = velocities[index];
+    velocity.xyz += acceleration * dt;
+    velocities[index] = velocity;
 
-    velocities[index] = vec4(
-        moved_velocity.x,
-        moved_velocity.y,
-        moved_velocity.z,
-        velocity.w,
-    );
-    moved[index] = vec4(
-        body.x + moved_velocity.x * dt,
-        body.y + moved_velocity.y * dt,
-        body.z + moved_velocity.z * dt,
-        // The mass rides along untouched.
-        body.w,
-    );
+    let mut moved_body = body;
+    moved_body.xyz += velocity.xyz * dt;
+    moved[index] = moved_body;
 }
 
 /// How many bodies to simulate, and for how long.

@@ -118,6 +118,17 @@ fn drift(points: &[Vec4<f32>], output: &mut [Vec4<f32>], step: &f32) {
     output[index] = vec4(moved.x, moved.y, moved.z, point.w);
 }
 
+/// Exercises swizzles: a read, a write, and a swizzle of a swizzle, which
+/// the macro folds into one.
+#[kernel(workgroup_size(64))]
+fn mirror(points: &mut [Vec4<f32>]) {
+    let index = global_id().x;
+    let mut point = points[index];
+    point.xy = point.zyx.yz;
+    point.w = point.zy.x;
+    points[index] = point;
+}
+
 /// Exercises workgroup memory: a tile every invocation writes one element of,
 /// a barrier, `.len()` on the tile, and a read of the whole tile by one
 /// invocation.
@@ -316,6 +327,41 @@ fn vectors_casts_and_barriers_survive_the_round_trip() {
 }
 
 #[test]
+fn a_swizzle_of_a_swizzle_picks_from_the_vector_underneath() {
+    use unipute::ir::{Expr, Stmt};
+
+    let ir = mirror::ir();
+    let stores: Vec<(&Expr, &Expr)> = ir
+        .body
+        .iter()
+        .filter_map(|stmt| match stmt {
+            Stmt::Store { place, value } => Some((place, value)),
+            _ => None,
+        })
+        .collect();
+
+    // `point.zyx.yz` is `point.yx`.
+    let (place, value) = stores[0];
+    assert!(
+        matches!(place, Expr::Swizzle { components, .. } if components == &[0, 1]),
+        "{place:?}"
+    );
+    assert!(
+        matches!(value, Expr::Swizzle { base, components }
+            if components == &[1, 0] && matches!(**base, Expr::Local(_))),
+        "{value:?}"
+    );
+    // `point.zy.x` is `point.z`.
+    let (_, value) = stores[1];
+    assert!(
+        matches!(value, Expr::Component { index: 2, .. }),
+        "{value:?}"
+    );
+
+    assert!(mirror::WGSL.contains(".yx"), "{}", mirror::WGSL);
+}
+
+#[test]
 fn nested_functions_become_shader_functions() {
     let wgsl = tonemap::WGSL;
 
@@ -486,6 +532,13 @@ fn a_kernel_with_atomics_survives_the_runtime_path() {
 fn a_kernel_with_structs_survives_the_runtime_path() {
     let regenerated = unipute::compile_text(&fall::ir(), unipute::Target::Wgsl).unwrap();
     assert_eq!(regenerated, fall::WGSL);
+}
+
+#[cfg(feature = "runtime")]
+#[test]
+fn a_kernel_with_swizzles_survives_the_runtime_path() {
+    let regenerated = unipute::compile_text(&mirror::ir(), unipute::Target::Wgsl).unwrap();
+    assert_eq!(regenerated, mirror::WGSL);
 }
 
 #[cfg(feature = "runtime")]

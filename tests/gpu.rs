@@ -292,6 +292,52 @@ fn vector_buffers_keep_their_layout() {
     assert_eq!(gpu.read::<[f32; 4]>(&output_buffer), expected);
 }
 
+/// Swizzles: reading several components at once, assigning through one that
+/// reads what it writes, assigning into a buffer element, a swizzle of a
+/// swizzle, and a component of a value that is not in memory.
+#[kernel(workgroup_size(64))]
+fn shuffle(points: &mut [Vec4<f32>], sums: &mut [f32]) {
+    let index = global_id().x;
+    if index >= points.len() {
+        return;
+    }
+    let mut point = points[index];
+    point.xy = point.yx;
+    point.zw += point.xy * 2.0;
+    points[index].wzy = point.xyz.zyx;
+    sums[index] = (point.xy + point.zw).x + point.wzyx.yx.y;
+}
+
+#[test]
+fn swizzles_read_and_write_the_components_they_name() {
+    let Some(gpu) = gpu() else { return };
+
+    let points: Vec<[f32; 4]> = (0..100)
+        .map(|i| {
+            let i = i as f32;
+            [i, i + 1.0, i * 2.0, -i]
+        })
+        .collect();
+    let mut expected_points = Vec::with_capacity(points.len());
+    let mut expected_sums = Vec::with_capacity(points.len());
+    for &[x, y, z, w] in &points {
+        // After the first two lines of the kernel: `[y, x, z + 2y, w + 2x]`.
+        let point = [y, x, z + 2.0 * y, w + 2.0 * x];
+        // `point.xyz.zyx` lands in `w`, `z` and `y`, and `x` is left alone.
+        expected_points.push([x, point[0], point[1], point[2]]);
+        expected_sums.push((point[0] + point[2]) + point[3]);
+    }
+
+    let pipeline = gpu.pipeline::<shuffle>();
+    let points_buffer = gpu.storage(&points);
+    let sums_buffer = gpu.storage(&vec![0.0f32; points.len()]);
+    let groups = host::workgroups([points.len() as u32, 1, 1], shuffle::WORKGROUP_SIZE);
+    gpu.dispatch(&pipeline, &[&points_buffer, &sums_buffer], groups);
+
+    assert_eq!(gpu.read::<[f32; 4]>(&points_buffer), expected_points);
+    assert_eq!(gpu.read::<f32>(&sums_buffer), expected_sums);
+}
+
 /// A two dimensional dispatch, where both axes of the invocation id matter.
 ///
 /// It transposes, but it is not called `transpose`: that is a WGSL built-in,

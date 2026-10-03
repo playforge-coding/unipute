@@ -509,6 +509,27 @@ impl Scope<'_> {
                     | ir::Expr::Index { .. }
                     | ir::Expr::Component { .. }
                     | ir::Expr::Member { .. } => Ok(typed),
+                    // Each component of the value lands in one component of
+                    // the place, so a place naming one twice would get two.
+                    ir::Expr::Swizzle { components, .. } => {
+                        match components
+                            .iter()
+                            .enumerate()
+                            .find(|(at, index)| components[..*at].contains(index))
+                        {
+                            Some((_, index)) => {
+                                let letter = ["x", "y", "z", "w"][usize::from(*index)];
+                                Err(syn::Error::new_spanned(
+                                    expr,
+                                    format!(
+                                        "this names `{letter}` more than once, so it cannot be \
+                                         assigned to"
+                                    ),
+                                ))
+                            }
+                            None => Ok(typed),
+                        }
+                    }
                     // A single shared value is assigned by name. A shared
                     // array is written one element at a time, like a buffer.
                     ir::Expr::Shared(id) => {

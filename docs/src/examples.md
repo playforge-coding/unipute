@@ -66,8 +66,8 @@ cargo run --example nbody
 ```
 
 A direct n-body simulation, run for twenty steps. Buffers of `Vec4<f32>`, a
-helper that takes vectors and returns one, and `dot` and `inverse_sqrt` doing
-the work. The first step is checked against the same maths on the CPU, and the
+helper that takes vectors and returns one, swizzles to pick the position out
+of each body, and `dot` and `inverse_sqrt` doing the work. The first step is checked against the same maths on the CPU, and the
 total momentum is printed as the simulation goes, since every pull has an
 equal and opposite one and the physics says it should not change. Packing
 position and mass into one `Vec4` is the sort of thing that matters in a

@@ -342,6 +342,15 @@ fn expr(node: &ir::Expr) -> TokenStream {
                 }
             }
         }
+        ir::Expr::Swizzle { base, components } => {
+            let base = expr(base);
+            quote! {
+                ::unipute::ir::Expr::Swizzle {
+                    base: ::std::boxed::Box::new(#base),
+                    components: ::std::vec![#(#components),*],
+                }
+            }
+        }
         ir::Expr::Member { base, index } => {
             let base = expr(base);
             quote! {

@@ -1,0 +1,5 @@
+error: `rgba` is not a vector component, use `x`, `y`, `z` or `w`, or up to four of them as in `xy` or `zyx`
+ --> tests/ui/swizzle_colour_names.rs:7:57
+  |
+7 |     colors[index] = vec4(0.0f32, 0.0, 0.0, 0.0) + color.rgba;
+  |                                                         ^^^^

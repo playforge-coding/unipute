@@ -501,19 +501,33 @@ fn allowed_in_continuing(stmt: &ir::Stmt) -> bool {
     }
 }
 
-/// Whether an expression produces a value directly rather than naming memory.
-/// Reading a component of one of these is an access on the value, since there
-/// is no pointer to load through.
-fn names_no_memory(expr: &ir::Expr) -> bool {
-    matches!(
-        expr,
-        ir::Expr::BuiltIn(_)
-            | ir::Expr::Param(_)
-            | ir::Expr::Call { .. }
-            | ir::Expr::Compose { .. }
-            | ir::Expr::Construct { .. }
-            | ir::Expr::Math { .. }
-    )
+/// Whether an expression names memory rather than producing a value directly.
+/// Reading part of something that does not, such as a component of `a + b`,
+/// is an access on the value, since there is no pointer to load through.
+fn names_memory(expr: &ir::Expr) -> bool {
+    match expr {
+        ir::Expr::Local(_) | ir::Expr::Resource(_) | ir::Expr::Shared(_) => true,
+        ir::Expr::Index { base, .. }
+        | ir::Expr::Component { base, .. }
+        | ir::Expr::Member { base, .. } => names_memory(base),
+        _ => false,
+    }
+}
+
+/// The size of the vector a swizzle produces, checking that each component
+/// it names exists in some vector.
+fn swizzle_size(components: &[u8]) -> Result<ir::VectorSize> {
+    if let Some(index) = components.iter().find(|index| **index > 3) {
+        return Err(Error::Invalid(format!(
+            "a swizzle names component {index}, but a vector has at most four"
+        )));
+    }
+    ir::VectorSize::from_count(components.len() as u8).ok_or_else(|| {
+        Error::Invalid(format!(
+            "a swizzle picks two to four components, not {}",
+            components.len()
+        ))
+    })
 }
 
 /// Collects the built-ins a body reads, in the order they are first seen.
@@ -587,7 +601,9 @@ fn walk_expr(expr: &ir::Expr, visit: &mut impl FnMut(&ir::Expr)) {
             walk_expr(base, visit);
             walk_expr(index, visit);
         }
-        ir::Expr::Component { base, .. } | ir::Expr::Member { base, .. } => {
+        ir::Expr::Component { base, .. }
+        | ir::Expr::Swizzle { base, .. }
+        | ir::Expr::Member { base, .. } => {
             walk_expr(base, visit);
         }
         ir::Expr::Unary { value, .. } => walk_expr(value, visit),
@@ -800,6 +816,10 @@ impl Context<'_> {
                 let pointer = self.local_pointer(*local)?;
                 block.push(Statement::Store { pointer, value }, SPAN);
             }
+            ir::Stmt::Store {
+                place: ir::Expr::Swizzle { base, components },
+                value,
+            } => self.store_swizzle(block, base, components, value)?,
             ir::Stmt::Store { place, value } => {
                 let mut emitter = naga::proc::Emitter::default();
                 emitter.start(&self.expressions);
@@ -928,6 +948,56 @@ impl Context<'_> {
                     SPAN,
                 );
             }
+        }
+        Ok(())
+    }
+
+    /// Writes a vector into some components of the vector at `base`.
+    ///
+    /// Naga has no store through a swizzle, so this is one store per
+    /// component. The value is worked out in full before the first of them,
+    /// which is what keeps `v.xy = v.yx` from reading a component it has
+    /// already overwritten.
+    fn store_swizzle(
+        &mut self,
+        block: &mut Block,
+        base: &ir::Expr,
+        components: &[u8],
+        value: &ir::Expr,
+    ) -> Result<()> {
+        swizzle_size(components)?;
+        for (at, index) in components.iter().enumerate() {
+            if components[..at].contains(index) {
+                return Err(Error::Invalid(format!(
+                    "a swizzle that is assigned to names component {index} twice"
+                )));
+            }
+        }
+        let mut emitter = naga::proc::Emitter::default();
+        emitter.start(&self.expressions);
+        let vector = self.lower_place(block, &mut emitter, base)?;
+        let value = self.lower_expr(block, &mut emitter, value)?;
+        let mut stores = Vec::with_capacity(components.len());
+        for (from, index) in components.iter().enumerate() {
+            let pointer = self.expressions.append(
+                Expression::AccessIndex {
+                    base: vector,
+                    index: u32::from(*index),
+                },
+                SPAN,
+            );
+            let value = self.expressions.append(
+                Expression::AccessIndex {
+                    base: value,
+                    index: from as u32,
+                },
+                SPAN,
+            );
+            stores.push(Statement::Store { pointer, value });
+        }
+        block.extend(emitter.finish(&self.expressions));
+        for store in stores {
+            block.push(store, SPAN);
         }
         Ok(())
     }
@@ -1208,7 +1278,7 @@ impl Context<'_> {
             // Reading through an index is normally a pointer followed by a
             // load. Some bases are plain values rather than memory, though,
             // and those are read with an access on the value itself.
-            ir::Expr::Component { base, index } if names_no_memory(base) => {
+            ir::Expr::Component { base, index } if !names_memory(base) => {
                 let base = self.lower_expr(block, emitter, base)?;
                 Ok(self.expressions.append(
                     Expression::AccessIndex {
@@ -1218,7 +1288,7 @@ impl Context<'_> {
                     SPAN,
                 ))
             }
-            ir::Expr::Member { base, index } if names_no_memory(base) => {
+            ir::Expr::Member { base, index } if !names_memory(base) => {
                 let base = self.lower_expr(block, emitter, base)?;
                 Ok(self.expressions.append(
                     Expression::AccessIndex {
@@ -1228,12 +1298,31 @@ impl Context<'_> {
                     SPAN,
                 ))
             }
-            ir::Expr::Index { base, index } if names_no_memory(base) => {
+            ir::Expr::Index { base, index } if !names_memory(base) => {
                 let base = self.lower_expr(block, emitter, base)?;
                 let index = self.lower_expr(block, emitter, index)?;
                 Ok(self
                     .expressions
                     .append(Expression::Access { base, index }, SPAN))
+            }
+            // A swizzle always reads the whole vector and picks from the
+            // value, since there is no pointer to part of a vector that
+            // spans several components.
+            ir::Expr::Swizzle { base, components } => {
+                let size = swizzle_size(components)?;
+                let vector = self.lower_expr(block, emitter, base)?;
+                let mut pattern = naga::SwizzleComponent::XYZW;
+                for (slot, index) in pattern.iter_mut().zip(components) {
+                    *slot = naga::SwizzleComponent::XYZW[usize::from(*index)];
+                }
+                Ok(self.expressions.append(
+                    Expression::Swizzle {
+                        size: naga_vector_size(size),
+                        vector,
+                        pattern,
+                    },
+                    SPAN,
+                ))
             }
             ir::Expr::Index { .. } | ir::Expr::Component { .. } | ir::Expr::Member { .. } => {
                 let pointer = self.lower_place(block, emitter, expr)?;

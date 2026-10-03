@@ -213,6 +213,13 @@ impl Printer<'_> {
                 let name = ["x", "y", "z", "w"][*index as usize];
                 format!("{}.{name}", self.expr(base))
             }
+            Expr::Swizzle { base, components } => {
+                let names: String = components
+                    .iter()
+                    .map(|index| ["x", "y", "z", "w"][*index as usize])
+                    .collect();
+                format!("{}.{names}", self.expr(base))
+            }
             // The IR names a member by position. Its name is on the struct
             // type, which the base expression's type would give, so a printer
             // that tracks types could show it. This one does not, and shows
@@ -392,7 +399,9 @@ impl Stats {
                 self.expr(base);
                 self.expr(index);
             }
-            Expr::Component { base, .. } | Expr::Member { base, .. } => self.expr(base),
+            Expr::Component { base, .. }
+            | Expr::Swizzle { base, .. }
+            | Expr::Member { base, .. } => self.expr(base),
             Expr::Unary { value, .. } => self.expr(value),
             Expr::Binary { lhs, rhs, .. } => {
                 self.expr(lhs);

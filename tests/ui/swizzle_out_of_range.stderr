@@ -1,0 +1,5 @@
+error: `z` is out of range for a vec2
+ --> tests/ui/swizzle_out_of_range.rs:6:35
+  |
+6 |     output[index] = points[index].xyz;
+  |                                   ^^^

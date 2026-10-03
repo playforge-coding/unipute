@@ -6,7 +6,8 @@ here is the list.
 ## What does work
 
 Compute kernels, end to end, across WGSL, SPIR-V, MSL, HLSL and GLSL. Scalars,
-vectors and [your own structs](./kernels/structs.md), storage buffers and
+vectors and their [swizzles](./kernels/types.md#swizzles), [your own
+structs](./kernels/structs.md), storage buffers and
 uniforms, the control flow in [Control flow](./kernels/control-flow.md), the
 functions in [Built-ins and functions](./kernels/builtins.md), the nested
 functions in [Your own functions](./kernels/functions.md), [workgroup
@@ -110,15 +111,12 @@ Your `#[kernel]` function stops being callable from Rust. Being able to run a
 kernel on the CPU, for testing without a GPU, would be genuinely useful and is
 not there.
 
-## Swizzles
-
-`color.xy` does not work. Write `vec2(color.x, color.y)`.
-
 ## How to read this list
 
-Everything here is a gap rather than a decision against. The ones with the
-clearest path are swizzles and matrices, since naga already has both and
-neither touches the host.
+Everything here is a gap rather than a decision against. The one with the
+clearest path is matrices, since naga already has them and a matrix that
+stays inside a kernel does not touch the host. One in a buffer does, because
+the host has to lay out its columns the way the shader reads them.
 
 If one of these is blocking you, saying so is useful. It is easier to
 prioritise against a real kernel someone is trying to write than against a

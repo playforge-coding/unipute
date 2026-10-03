@@ -1,0 +1,5 @@
+error: this names `x` more than once, so it cannot be assigned to
+ --> tests/ui/swizzle_assigns_a_component_twice.rs:7:5
+  |
+7 |     point.xx = vec2(1.0f32, 2.0);
+  |     ^^^^^^^^

@@ -854,6 +854,80 @@ fn runtime_sized_workgroup_memory_is_rejected() {
     assert!(error.to_string().contains("fixed length"), "{error}");
 }
 
+/// A kernel that reverses the first three components of each vector in a
+/// buffer, by assigning a swizzle of the vector to another swizzle of it.
+fn reverse_kernel() -> Kernel {
+    let mut kernel = Kernel::new("reverse", [64, 1, 1]);
+    kernel.resources.push(Resource {
+        name: "points".to_owned(),
+        group: 0,
+        binding: 0,
+        ty: Type::slice(Type::vector(VectorSize::Four, Scalar::F32)),
+        access: Access::ReadWrite,
+    });
+    let point = || Expr::Index {
+        base: Box::new(Expr::Resource(ResourceId(0))),
+        index: Box::new(Expr::Component {
+            base: Box::new(Expr::BuiltIn(BuiltIn::GlobalInvocationId)),
+            index: 0,
+        }),
+    };
+    kernel.body.push(Stmt::Store {
+        place: Expr::Swizzle {
+            base: Box::new(point()),
+            components: vec![0, 1, 2],
+        },
+        value: Expr::Swizzle {
+            base: Box::new(point()),
+            components: vec![2, 1, 0],
+        },
+    });
+    kernel
+}
+
+#[test]
+fn a_swizzle_is_read_whole_and_written_a_component_at_a_time() {
+    let wgsl = unipute_naga::compile_wgsl(&reverse_kernel()).unwrap();
+    assert!(wgsl.contains(".zyx"), "{wgsl}");
+    // One store per component, and none to `w`.
+    for component in ["x", "y", "z"] {
+        assert!(wgsl.contains(&format!("].{component} = ")), "{wgsl}");
+    }
+    assert!(!wgsl.contains("].w = "), "{wgsl}");
+}
+
+#[test]
+fn assigning_to_a_swizzle_that_repeats_a_component_is_rejected() {
+    let mut kernel = reverse_kernel();
+    let Stmt::Store {
+        place: Expr::Swizzle { components, .. },
+        ..
+    } = &mut kernel.body[0]
+    else {
+        unreachable!("the kernel stores through a swizzle");
+    };
+    *components = vec![0, 1, 0];
+
+    let error = unipute_naga::compile_wgsl(&kernel).unwrap_err();
+    assert!(error.to_string().contains("twice"), "{error}");
+}
+
+#[test]
+fn a_swizzle_of_five_components_is_rejected() {
+    let mut kernel = reverse_kernel();
+    let Stmt::Store {
+        value: Expr::Swizzle { components, .. },
+        ..
+    } = &mut kernel.body[0]
+    else {
+        unreachable!("the kernel reads a swizzle");
+    };
+    *components = vec![0, 1, 2, 3, 0];
+
+    let error = unipute_naga::compile_wgsl(&kernel).unwrap_err();
+    assert!(error.to_string().contains("two to four"), "{error}");
+}
+
 #[test]
 fn lowering_is_deterministic() {
     let first = unipute_naga::compile_wgsl(&scale_kernel()).unwrap();

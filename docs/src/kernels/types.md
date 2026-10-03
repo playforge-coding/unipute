@@ -51,8 +51,34 @@ Components are `.x`, `.y`, `.z` and `.w`, in that order. Reading past the end
 of the vector is a compile error, so `.w` on a `Vec3` will tell you off rather
 than producing something surprising.
 
-There are no swizzles yet. `color.xy` does not work, and you write
-`vec2(color.x, color.y)`.
+### Swizzles
+
+Two to four components at once make a new vector, in whatever order you name
+them. `color.xy` is a `Vec2`, `color.zyx` is the first three reversed, and
+`color.xxx` repeats one. You can assign through a swizzle too, which writes
+just the components it names:
+
+```rust
+# use unipute::kernel;
+#[kernel(workgroup_size(64))]
+fn step(bodies: &mut [Vec4<f32>], dt: &f32) {
+    let index = global_id().x;
+    if index < bodies.len() {
+        // Position in `xyz`, mass in `w`. Only the position moves.
+        let mut body = bodies[index];
+        body.xyz += vec3(0.0f32, -9.8, 0.0) * dt;
+        bodies[index] = body;
+    }
+}
+```
+
+The value is worked out in full before anything is written, so `v.xy = v.yx`
+swaps the two rather than copying one over the other. A swizzle you assign to
+cannot name a component twice, since `v.xx = ...` would have two values for
+one place.
+
+The letters are `x`, `y`, `z` and `w` only. Some shader languages also take
+`rgba` for colours, but Unipute keeps one set of names.
 
 Vectors can be stored in buffers:
 

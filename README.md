@@ -122,7 +122,7 @@ and the glue is in [examples/host/mod.rs](examples/host/mod.rs).
 | `emit_shaders` | one kernel in every target this build has |
 | `image_blur`   | a two dimensional kernel blurring a picture, printed before and after |
 | `prefix_sum`   | three kernels and fourteen dispatches for one algorithm |
-| `nbody`        | vector buffers, vector helpers and vector maths, stepped on the GPU |
+| `nbody`        | vector buffers, helpers, swizzles and maths, stepped on the GPU |
 | `particles`    | a buffer of structs and a uniform struct, shared by host and kernel |
 | `histogram`    | atomics in workgroup memory and in a buffer, counting without losing one |
 | `inspect_ir`   | walking a kernel's IR, the way a new back end would |

@@ -307,6 +307,16 @@ pub enum Expr {
         base: Box<Expr>,
         index: u8,
     },
+    /// Picks two to four components of a vector, in any order, such as
+    /// `.zyx`. The result is a vector with one component per entry in
+    /// `components`, each an index into `base` as in [`Expr::Component`].
+    ///
+    /// As the place of a [`Stmt::Store`], no component may appear twice, and
+    /// each one is written from the matching component of the value.
+    Swizzle {
+        base: Box<Expr>,
+        components: Vec<u8>,
+    },
     /// Selects one member of a struct by its position in
     /// [`StructType::members`], such as `body.mass`.
     Member {

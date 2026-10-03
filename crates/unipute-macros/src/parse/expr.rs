@@ -301,7 +301,7 @@ impl Scope<'_> {
         })
     }
 
-    /// `.x` on a vector, or `.name` on a struct.
+    /// `.x` or a swizzle such as `.xy` on a vector, or `.name` on a struct.
     fn field(&mut self, field: &syn::ExprField) -> syn::Result<Typed> {
         let syn::Member::Named(name) = &field.member else {
             return Err(syn::Error::new_spanned(
@@ -327,27 +327,35 @@ impl Scope<'_> {
             ));
         }
 
-        let component = match name.to_string().as_str() {
-            "x" => 0,
-            "y" => 1,
-            "z" => 2,
-            "w" => 3,
-            other => {
-                return Err(syn::Error::new_spanned(
+        let text = name.to_string();
+        let components = text
+            .chars()
+            .map(component_index)
+            .collect::<Option<Vec<u8>>>()
+            .filter(|components| components.len() <= 4)
+            .ok_or_else(|| {
+                syn::Error::new_spanned(
                     name,
-                    format!("`{other}` is not a vector component, use `x`, `y`, `z` or `w`"),
-                ));
-            }
-        };
-        let ty = match &base.ty {
+                    format!(
+                        "`{text}` is not a vector component, use `x`, `y`, `z` or `w`, or up to \
+                         four of them as in `xy` or `zyx`"
+                    ),
+                )
+            })?;
+        let scalar = match &base.ty {
             Some(ir::Type::Vector { size, scalar }) => {
-                if component >= size.count() {
+                if let Some(letter) = text
+                    .chars()
+                    .zip(&components)
+                    .find(|(_, index)| **index >= size.count())
+                    .map(|(letter, _)| letter)
+                {
                     return Err(syn::Error::new_spanned(
                         name,
-                        format!("`{name}` is out of range for a vec{}", size.count()),
+                        format!("`{letter}` is out of range for a vec{}", size.count()),
                     ));
                 }
-                Some(ir::Type::scalar(*scalar))
+                Some(*scalar)
             }
             Some(other) => {
                 return Err(syn::Error::new_spanned(
@@ -357,12 +365,35 @@ impl Scope<'_> {
             }
             None => None,
         };
+
+        // A swizzle of a swizzle picks straight from the vector underneath,
+        // so `v.zyx.yz` is `v.yx` and `v.zy.x` is `v.z`. That keeps the
+        // result something that can be assigned to.
+        let (base, components) = match base.expr {
+            ir::Expr::Swizzle {
+                base,
+                components: picked,
+            } => (
+                base,
+                components
+                    .iter()
+                    .map(|index| picked[usize::from(*index)])
+                    .collect(),
+            ),
+            other => (Box::new(other), components),
+        };
+        if let [index] = components[..] {
+            return Ok(Typed {
+                expr: ir::Expr::Component { base, index },
+                ty: scalar.map(ir::Type::scalar),
+                weak: false,
+            });
+        }
+        let size = ir::VectorSize::from_count(components.len() as u8)
+            .expect("between two and four components");
         Ok(Typed {
-            expr: ir::Expr::Component {
-                base: Box::new(base.expr),
-                index: component,
-            },
-            ty,
+            expr: ir::Expr::Swizzle { base, components },
+            ty: scalar.map(|scalar| ir::Type::vector(size, scalar)),
             weak: false,
         })
     }
@@ -813,6 +844,17 @@ fn math_result_type(function: ir::MathFn, argument: Option<ir::Type>) -> Option<
             .map(ir::Type::scalar),
         // Everything else keeps the shape of its first argument.
         _ => argument,
+    }
+}
+
+/// The position of a vector component named by one letter.
+fn component_index(letter: char) -> Option<u8> {
+    match letter {
+        'x' => Some(0),
+        'y' => Some(1),
+        'z' => Some(2),
+        'w' => Some(3),
+        _ => None,
     }
 }
 
