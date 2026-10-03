@@ -166,15 +166,44 @@ of preparation worth doing before anyone starts.
 The front end covers a useful subset and rejects the rest with a message. The
 pieces most likely to be wanted next, in rough order of value:
 
-- Atomics, which naga has as `TypeInner::Atomic` and `Statement::Atomic`.
 - Structs nested in structs, and arrays as struct fields. The IR and the back
   end take both already; the derive does not, see [Structs](#structs).
+- Atomics as struct fields, for the same reason.
 - Textures and samplers, which mostly matter once graphics stages land.
 
 Calling other functions is done, as nested `fn` items inside a kernel body.
 See [Functions](#functions) below for the shape of it and what is left.
 User defined structs are done too, and [Structs](#structs) is about how a
-macro on one item came to know about another.
+macro on one item came to know about another. So are atomics, see
+[Atomics](#atomics).
+
+## Atomics
+
+`Type::Atomic(Scalar)` is a `u32` or `i32` that invocations update through
+`Expr::Atomic`, `Expr::AtomicCompareExchange` and `Stmt::Atomic`. Reading one
+is an ordinary `Expr::Index` or `Expr::Shared` of its place and writing one
+is an ordinary `Stmt::Store`; naga's writers see the pointer's type and spell
+both as the atomic load and store of each language. The IR keeps atomics as
+a type rather than a flag on the operation because that is what every target
+does: the declaration says the memory is atomic, and the operations follow.
+
+In naga an atomic operation is a statement that binds its result to an
+`Expression::AtomicResult`, the same arrangement as a call, so the lowering
+is the same dance: close the emit range, push the statement, open a new one.
+`Stmt::Atomic` pushes it with no result, except for an exchange, where naga
+insists on one. A compare and exchange binds naga's predeclared two member
+struct, which `Module::generate_predeclared_type` makes and the writers know
+by name, and only the `exchanged` member is handed on. The old value would
+not say whether a target that is allowed to fail spuriously actually
+swapped.
+
+The front end treats an atomic as a place and never a value. `Scope::expr`
+refuses an atomic typed result, so a bare read is an error pointing at
+`.load()`, and only a method receiver or the left side of an assignment goes
+through `place_or_value`, which allows it. Assignment and compound assignment
+to an atomic are caught there too, each naming the method to use instead.
+Uniforms, read only buffers, locals and helper parameters refuse the type
+outright, and the back end checks the buffer case again.
 
 ## Structs
 

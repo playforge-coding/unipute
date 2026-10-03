@@ -184,7 +184,26 @@ pub fn ty(node: &ir::Type) -> TokenStream {
             let def = struct_type(def);
             quote!(::unipute::ir::Type::Struct(#def))
         }
+        ir::Type::Atomic(value) => {
+            let value = scalar(*value);
+            quote!(::unipute::ir::Type::Atomic(#value))
+        }
     }
+}
+
+fn atomic_op(op: ir::AtomicOp) -> TokenStream {
+    let name = match op {
+        ir::AtomicOp::Add => "Add",
+        ir::AtomicOp::Subtract => "Subtract",
+        ir::AtomicOp::Min => "Min",
+        ir::AtomicOp::Max => "Max",
+        ir::AtomicOp::And => "And",
+        ir::AtomicOp::Or => "Or",
+        ir::AtomicOp::Xor => "Xor",
+        ir::AtomicOp::Swap => "Swap",
+    };
+    let ident = syn::Ident::new(name, proc_macro2::Span::call_site());
+    quote!(::unipute::ir::AtomicOp::#ident)
 }
 
 fn literal(literal: ir::Literal) -> TokenStream {
@@ -404,6 +423,34 @@ fn expr(node: &ir::Expr) -> TokenStream {
             let id = id.0;
             quote!(::unipute::ir::Expr::ArrayLength(::unipute::ir::ResourceId(#id)))
         }
+        ir::Expr::Atomic { op, place, value } => {
+            let op = atomic_op(*op);
+            let place = expr(place);
+            let value = expr(value);
+            quote! {
+                ::unipute::ir::Expr::Atomic {
+                    op: #op,
+                    place: ::std::boxed::Box::new(#place),
+                    value: ::std::boxed::Box::new(#value),
+                }
+            }
+        }
+        ir::Expr::AtomicCompareExchange {
+            place,
+            compare,
+            value,
+        } => {
+            let place = expr(place);
+            let compare = expr(compare);
+            let value = expr(value);
+            quote! {
+                ::unipute::ir::Expr::AtomicCompareExchange {
+                    place: ::std::boxed::Box::new(#place),
+                    compare: ::std::boxed::Box::new(#compare),
+                    value: ::std::boxed::Box::new(#value),
+                }
+            }
+        }
     }
 }
 
@@ -490,6 +537,12 @@ fn stmt(node: &ir::Stmt) -> TokenStream {
                 ir::BarrierScope::Storage => quote!(::unipute::ir::BarrierScope::Storage),
             };
             quote!(::unipute::ir::Stmt::Barrier(#scope))
+        }
+        ir::Stmt::Atomic { op, place, value } => {
+            let op = atomic_op(*op);
+            let place = expr(place);
+            let value = expr(value);
+            quote!(::unipute::ir::Stmt::Atomic { op: #op, place: #place, value: #value })
         }
     }
 }

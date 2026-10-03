@@ -169,5 +169,6 @@ impl<'ast> Visit<'ast> for Names {
 }
 
 fn is_built_in_type(name: &str) -> bool {
-    ir::Scalar::from_rust_name(name).is_some() || matches!(name, "Vec2" | "Vec3" | "Vec4")
+    ir::Scalar::from_rust_name(name).is_some()
+        || matches!(name, "Vec2" | "Vec3" | "Vec4" | "AtomicU32" | "AtomicI32")
 }

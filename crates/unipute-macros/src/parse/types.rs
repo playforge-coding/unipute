@@ -24,6 +24,15 @@ pub fn param_type(ty: &syn::Type, structs: &[ir::StructType]) -> syn::Result<Par
             match &*reference.elem {
                 syn::Type::Slice(slice) => {
                     let element = value_type(&slice.elem, structs)?;
+                    if access == ir::Access::Read
+                        && let ir::Type::Atomic(_) = element
+                    {
+                        return Err(syn::Error::new_spanned(
+                            ty,
+                            "a buffer of atomics has to be `&mut`, since an atomic is for \
+                             updating; a buffer nobody writes can be a plain `&[u32]`",
+                        ));
+                    }
                     Ok(ParamType {
                         ty: ir::Type::slice(element),
                         access,
@@ -37,17 +46,31 @@ pub fn param_type(ty: &syn::Type, structs: &[ir::StructType]) -> syn::Result<Par
                         ));
                     }
                     Ok(ParamType {
-                        ty: value_type(other, structs)?,
+                        ty: uniform_type(other, structs)?,
                         access: ir::Access::Uniform,
                     })
                 }
             }
         }
         other => Ok(ParamType {
-            ty: value_type(other, structs)?,
+            ty: uniform_type(other, structs)?,
             access: ir::Access::Uniform,
         }),
     }
+}
+
+/// A uniform's type, which is anything but an atomic: nobody can write a
+/// uniform, so there is nothing for an atomic to guard.
+fn uniform_type(ty: &syn::Type, structs: &[ir::StructType]) -> syn::Result<ir::Type> {
+    let parsed = value_type(ty, structs)?;
+    if let ir::Type::Atomic(_) = parsed {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "a uniform cannot be an atomic, since nothing can write to it; put atomics in a \
+             `&mut [AtomicU32]` buffer",
+        ));
+    }
+    Ok(parsed)
 }
 
 /// Reads the type of workgroup memory: a value type, or a fixed length array
@@ -140,6 +163,17 @@ pub fn value_type(ty: &syn::Type, structs: &[ir::StructType]) -> syn::Result<ir:
         return Ok(ir::Type::vector(size, scalar));
     }
 
+    // AtomicU32 and AtomicI32, named the way Rust's own are.
+    if let Some(scalar) = atomic_scalar(&name) {
+        if !segment.arguments.is_empty() {
+            return Err(syn::Error::new_spanned(
+                &segment.arguments,
+                format!("`{name}` does not take type arguments"),
+            ));
+        }
+        return Ok(ir::Type::Atomic(scalar));
+    }
+
     if let Some(def) = structs.iter().find(|def| def.name == name) {
         if !segment.arguments.is_empty() {
             return Err(syn::Error::new_spanned(
@@ -153,10 +187,30 @@ pub fn value_type(ty: &syn::Type, structs: &[ir::StructType]) -> syn::Result<ir:
     Err(syn::Error::new_spanned(
         ty,
         format!(
-            "`{name}` is not a type Unipute knows, use a scalar, `Vec2`, `Vec3` or `Vec4`, or a \
-             struct with `#[derive(unipute::Layout)]`"
+            "`{name}` is not a type Unipute knows, use a scalar, `Vec2`, `Vec3` or `Vec4`, \
+             `AtomicU32` or `AtomicI32`, or a struct with `#[derive(unipute::Layout)]`"
         ),
     ))
+}
+
+/// Reads a type that a value can have: anything [`value_type`] accepts except
+/// an atomic, which is a place to operate on rather than a value to hold.
+pub fn plain_value_type(
+    ty: &syn::Type,
+    structs: &[ir::StructType],
+    what: &str,
+) -> syn::Result<ir::Type> {
+    let parsed = value_type(ty, structs)?;
+    if let ir::Type::Atomic(_) = parsed {
+        return Err(syn::Error::new_spanned(
+            ty,
+            format!(
+                "{what} cannot be an atomic, an atomic lives in a `&mut` buffer or in \
+                 workgroup memory and is reached with `.load()` and the `fetch_` methods"
+            ),
+        ));
+    }
+    Ok(parsed)
 }
 
 fn vector_size(name: &str) -> Option<ir::VectorSize> {
@@ -164,6 +218,14 @@ fn vector_size(name: &str) -> Option<ir::VectorSize> {
         "Vec2" => Some(ir::VectorSize::Two),
         "Vec3" => Some(ir::VectorSize::Three),
         "Vec4" => Some(ir::VectorSize::Four),
+        _ => None,
+    }
+}
+
+fn atomic_scalar(name: &str) -> Option<ir::Scalar> {
+    match name {
+        "AtomicU32" => Some(ir::Scalar::U32),
+        "AtomicI32" => Some(ir::Scalar::I32),
         _ => None,
     }
 }

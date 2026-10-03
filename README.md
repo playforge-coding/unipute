@@ -113,7 +113,7 @@ cargo run --example emit_shaders --features "spv,msl,hlsl,glsl"
 ## Examples
 
 Each file in [examples/](examples/) is about a different part of the job.
-Four of them run their kernels on a GPU through wgpu and check the answer
+Five of them run their kernels on a GPU through wgpu and check the answer
 against the CPU. wgpu is a dev dependency of this repository, not of Unipute,
 and the glue is in [examples/host/mod.rs](examples/host/mod.rs).
 
@@ -124,6 +124,7 @@ and the glue is in [examples/host/mod.rs](examples/host/mod.rs).
 | `prefix_sum`   | three kernels and fourteen dispatches for one algorithm |
 | `nbody`        | vector buffers, vector helpers and vector maths, stepped on the GPU |
 | `particles`    | a buffer of structs and a uniform struct, shared by host and kernel |
+| `histogram`    | atomics in workgroup memory and in a buffer, counting without losing one |
 | `inspect_ir`   | walking a kernel's IR, the way a new back end would |
 | `retarget`     | choosing a target from the command line at run time |
 
@@ -260,6 +261,25 @@ fn block_sum(input: &[f32], output: &mut [f32]) {
 ```
 
 The host never sees it, so it is not in `BINDINGS`.
+
+### Atomics
+
+`AtomicU32` and `AtomicI32`, in a `&mut` buffer or in workgroup memory, with
+`load`, `store`, `swap`, `compare_exchange` and the `fetch_` methods named as
+on Rust's own atomics, minus the ordering.
+
+```rust
+# use unipute::kernel;
+#[kernel(workgroup_size(64))]
+fn count_values(values: &[u32], bins: &mut [AtomicU32]) {
+    let index = global_id().x;
+    if index < values.len() {
+        bins[values[index] % 16u32].fetch_add(1u32);
+    }
+}
+```
+
+To the host the buffer is plain `u32`s.
 
 ### Built-ins
 

@@ -100,6 +100,10 @@ required-features = ["wgsl"]
 name = "particles"
 required-features = ["wgsl"]
 
+[[example]]
+name = "histogram"
+required-features = ["wgsl"]
+
 # This one translates while it runs, which is what the `runtime` feature is.
 [[example]]
 name = "retarget"

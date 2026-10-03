@@ -138,6 +138,14 @@ a uniform, a local, or a parameter of a nested function. Its fields are read
 with `.name`. [Your own structs](./structs.md) is the chapter on them, and on
 the one thing to know about their layout.
 
+## Atomics
+
+`AtomicU32` and `AtomicI32` are integers that many invocations can update at
+once without losing an update. They live in `&mut` buffers and in workgroup
+memory, and are reached through `.load()`, `.store()` and the `fetch_`
+methods rather than read and assigned like a number. [Atomics](./atomics.md)
+is the chapter on them.
+
 ## Arrays with a fixed length
 
 `[T; N]` is the type of [workgroup memory](./workgroup-memory.md), and that is
@@ -146,7 +154,6 @@ buffer is always a slice, since its length is the host's decision.
 
 ## What is not here yet
 
-Matrices, atomics, textures and samplers. All of them are on the list, and
-[What is not built yet](../roadmap.md) says roughly what each one needs. If
-you hit one of these, that chapter is the honest answer rather than a
-workaround.
+Matrices, textures and samplers. All of them are on the list, and [What is
+not built yet](../roadmap.md) says roughly what each one needs. If you hit
+one of these, that chapter is the honest answer rather than a workaround.

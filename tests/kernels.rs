@@ -181,6 +181,45 @@ fn fall(particles: &mut [Particle], settings: &Settings, heaviest: &mut [f32]) {
     particles[index].mass = particles[index].mass * 2.0;
 }
 
+/// Exercises atomics: a buffer of them, workgroup memory of them, every
+/// operation as a value and as a statement, a load, a store, and a compare
+/// and exchange loop.
+#[kernel(workgroup_size(64))]
+fn tally(values: &[u32], bins: &mut [AtomicU32], stats: &mut [AtomicI32]) {
+    #[workgroup]
+    let local_bins: [AtomicU32; 4];
+    #[workgroup]
+    let seen: AtomicU32;
+
+    let index = global_id().x;
+    let lane = local_index();
+    if index < values.len() {
+        local_bins[values[index] % 4u32].fetch_add(1u32);
+        seen.fetch_add(1);
+        stats[0].fetch_max(values[index] as i32);
+        stats[1].fetch_min(values[index] as i32);
+        stats[2].fetch_and(1);
+        stats[3].fetch_or(2);
+        stats[4].fetch_xor(4);
+    }
+    workgroup_barrier();
+
+    if lane < 4u32 {
+        let count = local_bins[lane].load();
+        let before = bins[lane].fetch_add(count);
+        let old = bins[lane + 4u32].swap(before);
+        bins[lane + 8u32].store(old + seen.load());
+        bins[lane + 12u32].fetch_sub(1);
+    }
+
+    // Claim a slot: keep trying until the exchange goes through.
+    let mut done = false;
+    while !done {
+        let current = bins[16].load();
+        done = bins[16].compare_exchange(current, current + 1u32);
+    }
+}
+
 /// Exercises explicit binding placement.
 #[kernel(workgroup_size(1))]
 fn placed(
@@ -393,6 +432,53 @@ fn the_derive_and_the_kernel_agree_about_a_struct() {
     assert_eq!(def.members[1].offset, 12);
     assert_eq!(def.size, 16);
     assert_eq!(def.size as usize, std::mem::size_of::<Particle>());
+}
+
+#[test]
+fn atomics_are_atomic_in_the_shader() {
+    let wgsl = tally::WGSL;
+
+    assert!(wgsl.contains("array<atomic<u32>>"), "{wgsl}");
+    assert!(wgsl.contains("array<atomic<i32>>"), "{wgsl}");
+    assert!(
+        wgsl.contains("var<workgroup> local_bins: array<atomic<u32>, 4>"),
+        "{wgsl}"
+    );
+    assert!(wgsl.contains("var<workgroup> seen: atomic<u32>"), "{wgsl}");
+    for call in [
+        "atomicAdd(",
+        "atomicSub(",
+        "atomicMax(",
+        "atomicMin(",
+        "atomicAnd(",
+        "atomicOr(",
+        "atomicXor(",
+        "atomicExchange(",
+        "atomicLoad(",
+        "atomicStore(",
+        "atomicCompareExchangeWeak(",
+    ] {
+        assert!(wgsl.contains(call), "{call} missing from {wgsl}");
+    }
+
+    let ir = tally::ir();
+    assert_eq!(
+        ir.resources[1].ty,
+        unipute::ir::Type::slice(unipute::ir::Type::Atomic(unipute::ir::Scalar::U32))
+    );
+    assert_eq!(
+        ir.shared[1].ty,
+        unipute::ir::Type::Atomic(unipute::ir::Scalar::U32)
+    );
+    // An atomic is a plain integer to the host, so the layout is untouched.
+    assert_eq!(tally::BINDINGS.len(), 3);
+}
+
+#[cfg(feature = "runtime")]
+#[test]
+fn a_kernel_with_atomics_survives_the_runtime_path() {
+    let regenerated = unipute::compile_text(&tally::ir(), unipute::Target::Wgsl).unwrap();
+    assert_eq!(regenerated, tally::WGSL);
 }
 
 #[cfg(feature = "runtime")]

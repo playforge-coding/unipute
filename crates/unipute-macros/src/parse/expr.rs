@@ -42,10 +42,36 @@ impl Typed {
     }
 }
 
+/// The atomic methods, for the message when someone reaches for another.
+pub const ATOMIC_METHODS: &str = "an atomic has `load`, `store`, `fetch_add`, `fetch_sub`, \
+                                  `fetch_min`, `fetch_max`, `fetch_and`, `fetch_or`, `fetch_xor`, \
+                                  `swap` and `compare_exchange`";
+
 impl Scope<'_> {
-    /// Reads an expression, optionally steering untyped literals towards a
-    /// scalar type.
+    /// Reads an expression that is used as a value, optionally steering
+    /// untyped literals towards a scalar type.
+    ///
+    /// An atomic is a place and not a value, so one turning up here is a
+    /// read without a `.load()`, and is refused with that suggestion.
     pub fn expr(&mut self, expr: &syn::Expr, expected: Option<ir::Scalar>) -> syn::Result<Typed> {
+        let typed = self.place_or_value(expr, expected)?;
+        if let Some(ir::Type::Atomic(_)) = typed.ty {
+            return Err(syn::Error::new_spanned(
+                expr,
+                "this is an atomic, read it with `.load()` or update it with one of the `fetch_` \
+                 methods",
+            ));
+        }
+        Ok(typed)
+    }
+
+    /// Reads an expression that may name an atomic: the receiver of an atomic
+    /// method, or the left side of an assignment.
+    pub fn place_or_value(
+        &mut self,
+        expr: &syn::Expr,
+        expected: Option<ir::Scalar>,
+    ) -> syn::Result<Typed> {
         match expr {
             syn::Expr::Lit(literal) => self.literal(literal, expected),
             syn::Expr::Path(path) => self.path(path),
@@ -432,10 +458,17 @@ impl Scope<'_> {
 
     fn method_call(&mut self, call: &syn::ExprMethodCall) -> syn::Result<Typed> {
         let method = call.method.to_string();
+        let receiver = self.place_or_value(&call.receiver, None)?;
+        if let Some(ir::Type::Atomic(scalar)) = receiver.ty {
+            return self.atomic_method(call, receiver.expr, scalar);
+        }
         if method != "len" {
             return Err(syn::Error::new_spanned(
                 &call.method,
-                format!("`{method}` is not a method Unipute supports, only `len` is"),
+                format!(
+                    "`{method}` is not a method Unipute supports, `len` is the only one on a \
+                     buffer, and the atomic methods need an `AtomicU32` or `AtomicI32`"
+                ),
             ));
         }
         if !call.args.is_empty() {
@@ -444,7 +477,6 @@ impl Scope<'_> {
                 "`len` takes no arguments",
             ));
         }
-        let receiver = self.expr(&call.receiver, None)?;
         match (&receiver.expr, &receiver.ty) {
             (ir::Expr::Resource(resource), Some(ir::Type::Array { len: None, .. })) => Ok(
                 Typed::scalar(ir::Expr::ArrayLength(*resource), ir::Scalar::U32),
@@ -459,6 +491,97 @@ impl Scope<'_> {
                 "`len` only works on a slice parameter or on workgroup memory that is an array",
             )),
         }
+    }
+
+    /// A method on an atomic, used for its value: `load`, `compare_exchange`,
+    /// `swap` or one of the `fetch_` operations.
+    fn atomic_method(
+        &mut self,
+        call: &syn::ExprMethodCall,
+        place: ir::Expr,
+        scalar: ir::Scalar,
+    ) -> syn::Result<Typed> {
+        let method = call.method.to_string();
+        match method.as_str() {
+            // A read of the place is the load. Naga knows the place is an
+            // atomic and every writer spells it as one.
+            "load" => {
+                if !call.args.is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        &call.args,
+                        "`load` takes no arguments, GPU atomics have no ordering to choose",
+                    ));
+                }
+                Ok(Typed::scalar(place, scalar))
+            }
+            "store" => Err(syn::Error::new_spanned(
+                call,
+                "`store` returns nothing, write it as a statement on its own line",
+            )),
+            "compare_exchange" => {
+                let compare = self.atomic_argument(call, 0, 2, scalar)?;
+                let value = self.atomic_argument(call, 1, 2, scalar)?;
+                Ok(Typed::scalar(
+                    ir::Expr::AtomicCompareExchange {
+                        place: Box::new(place),
+                        compare: Box::new(compare),
+                        value: Box::new(value),
+                    },
+                    ir::Scalar::Bool,
+                ))
+            }
+            other => {
+                let Some(op) = ir::AtomicOp::from_method_name(other) else {
+                    return Err(syn::Error::new_spanned(
+                        &call.method,
+                        format!("`{other}` is not an atomic operation, {ATOMIC_METHODS}"),
+                    ));
+                };
+                let value = self.atomic_argument(call, 0, 1, scalar)?;
+                Ok(Typed::scalar(
+                    ir::Expr::Atomic {
+                        op,
+                        place: Box::new(place),
+                        value: Box::new(value),
+                    },
+                    scalar,
+                ))
+            }
+        }
+    }
+
+    /// Argument `index` of an atomic method that takes `count`, read as the
+    /// atomic's scalar type.
+    pub fn atomic_argument(
+        &mut self,
+        call: &syn::ExprMethodCall,
+        index: usize,
+        count: usize,
+        scalar: ir::Scalar,
+    ) -> syn::Result<ir::Expr> {
+        if call.args.len() != count {
+            return Err(syn::Error::new_spanned(
+                &call.args,
+                format!(
+                    "`{}` takes {count} argument{} but got {}, and no ordering, since GPU \
+                     atomics have none to choose",
+                    call.method,
+                    if count == 1 { "" } else { "s" },
+                    call.args.len()
+                ),
+            ));
+        }
+        let argument = &call.args[index];
+        let value = self.expr(argument, Some(scalar))?;
+        if let Some(ty) = &value.ty
+            && *ty != ir::Type::scalar(scalar)
+        {
+            return Err(syn::Error::new_spanned(
+                argument,
+                format!("this atomic holds a `{scalar}`, but this is `{ty}`"),
+            ));
+        }
+        Ok(value.expr)
     }
 
     fn call(&mut self, call: &syn::ExprCall, expected: Option<ir::Scalar>) -> syn::Result<Typed> {

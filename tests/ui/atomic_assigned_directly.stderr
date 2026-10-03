@@ -1,0 +1,5 @@
+error: this is an atomic, update it with `.fetch_add(value)`
+ --> tests/ui/atomic_assigned_directly.rs:5:5
+  |
+5 |     counter[0] += 1u32;
+  |     ^^^^^^^^^^

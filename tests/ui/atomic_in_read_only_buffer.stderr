@@ -1,0 +1,5 @@
+error: a buffer of atomics has to be `&mut`, since an atomic is for updating; a buffer nobody writes can be a plain `&[u32]`
+ --> tests/ui/atomic_in_read_only_buffer.rs:4:19
+  |
+4 | fn watch(counter: &[AtomicU32], output: &mut [u32]) {
+  |                   ^^^^^^^^^^^^

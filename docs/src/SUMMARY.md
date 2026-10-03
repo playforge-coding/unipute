@@ -16,6 +16,7 @@
 - [Built-ins and functions](./kernels/builtins.md)
 - [Your own functions](./kernels/functions.md)
 - [Workgroup memory](./kernels/workgroup-memory.md)
+- [Atomics](./kernels/atomics.md)
 
 # Using what comes out
 

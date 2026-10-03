@@ -187,6 +187,14 @@ impl Printer<'_> {
                 ir::BarrierScope::Workgroup => println!("{pad}workgroup_barrier()"),
                 ir::BarrierScope::Storage => println!("{pad}storage_barrier()"),
             },
+            Stmt::Atomic { op, place, value } => {
+                println!(
+                    "{pad}{}.{}({})",
+                    self.expr(place),
+                    op.method_name(),
+                    self.expr(value)
+                );
+            }
         }
     }
 
@@ -242,6 +250,22 @@ impl Printer<'_> {
             Expr::ArrayLength(resource) => {
                 format!("{}.len()", self.kernel.resource(*resource).name)
             }
+            Expr::Atomic { op, place, value } => format!(
+                "{}.{}({})",
+                self.expr(place),
+                op.method_name(),
+                self.expr(value)
+            ),
+            Expr::AtomicCompareExchange {
+                place,
+                compare,
+                value,
+            } => format!(
+                "{}.compare_exchange({}, {})",
+                self.expr(place),
+                self.expr(compare),
+                self.expr(value)
+            ),
         }
     }
 
@@ -341,6 +365,10 @@ impl Stats {
                     self.block(continuing, loop_depth + 1);
                 }
                 Stmt::Call { args, .. } => self.exprs(args),
+                Stmt::Atomic { place, value, .. } => {
+                    self.expr(place);
+                    self.expr(value);
+                }
                 Stmt::Return { value: Some(value) } => self.expr(value),
                 Stmt::Return { value: None } | Stmt::Break | Stmt::Continue | Stmt::Barrier(_) => {}
             }
@@ -374,6 +402,19 @@ impl Stats {
             Expr::Compose { components, .. } => self.exprs(components),
             Expr::Construct { members, .. } => self.exprs(members),
             Expr::Call { args, .. } => self.exprs(args),
+            Expr::Atomic { place, value, .. } => {
+                self.expr(place);
+                self.expr(value);
+            }
+            Expr::AtomicCompareExchange {
+                place,
+                compare,
+                value,
+            } => {
+                self.expr(place);
+                self.expr(compare);
+                self.expr(value);
+            }
             Expr::Literal(_)
             | Expr::Local(_)
             | Expr::Param(_)

@@ -1,0 +1,5 @@
+error: `increment` is not an atomic operation, an atomic has `load`, `store`, `fetch_add`, `fetch_sub`, `fetch_min`, `fetch_max`, `fetch_and`, `fetch_or`, `fetch_xor`, `swap` and `compare_exchange`
+ --> tests/ui/atomic_unknown_method.rs:5:16
+  |
+5 |     counter[0].increment();
+  |                ^^^^^^^^^

@@ -90,6 +90,57 @@ impl BuiltIn {
     }
 }
 
+/// A read-modify-write on an atomic, done as one indivisible step.
+///
+/// Every one of these hands back the value the atomic held before, which is
+/// what [`Expr::Atomic`] produces. As a [`Stmt::Atomic`] the old value is
+/// dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AtomicOp {
+    Add,
+    Subtract,
+    Min,
+    Max,
+    And,
+    Or,
+    Xor,
+    /// Replaces the value outright.
+    Swap,
+}
+
+impl AtomicOp {
+    /// The method name the `kernel` macro accepts for this operation, in the
+    /// style of Rust's own atomics.
+    pub const fn method_name(self) -> &'static str {
+        match self {
+            Self::Add => "fetch_add",
+            Self::Subtract => "fetch_sub",
+            Self::Min => "fetch_min",
+            Self::Max => "fetch_max",
+            Self::And => "fetch_and",
+            Self::Or => "fetch_or",
+            Self::Xor => "fetch_xor",
+            Self::Swap => "swap",
+        }
+    }
+
+    /// Looks an operation up by the method name the macro accepts.
+    pub fn from_method_name(name: &str) -> Option<Self> {
+        [
+            Self::Add,
+            Self::Subtract,
+            Self::Min,
+            Self::Max,
+            Self::And,
+            Self::Or,
+            Self::Xor,
+            Self::Swap,
+        ]
+        .into_iter()
+        .find(|candidate| candidate.method_name() == name)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
     Negate,
@@ -299,6 +350,28 @@ pub enum Expr {
     },
     /// `slice.len()` on a runtime sized resource.
     ArrayLength(ResourceId),
+    /// Applies `op` to the atomic at `place` and produces the value it held
+    /// before. `place` names an atomic in a resource or in workgroup memory,
+    /// and `value` is a scalar of the atomic's type.
+    ///
+    /// Reading an atomic is an ordinary [`Expr::Index`] or [`Expr::Shared`]
+    /// of its place, and writing one is an ordinary [`Stmt::Store`]. Both are
+    /// single atomic accesses in every target.
+    Atomic {
+        op: AtomicOp,
+        place: Box<Expr>,
+        value: Box<Expr>,
+    },
+    /// Stores `value` into the atomic at `place` if it currently holds
+    /// `compare`, and produces a `bool` saying whether it did.
+    ///
+    /// A target is allowed to fail the exchange even when the values matched,
+    /// so a caller loops on the result rather than trusting one attempt.
+    AtomicCompareExchange {
+        place: Box<Expr>,
+        compare: Box<Expr>,
+        value: Box<Expr>,
+    },
 }
 
 /// Which memory a barrier synchronises.
@@ -357,4 +430,10 @@ pub enum Stmt {
         value: Option<Expr>,
     },
     Barrier(BarrierScope),
+    /// [`Expr::Atomic`] done for its effect, with the old value dropped.
+    Atomic {
+        op: AtomicOp,
+        place: Expr,
+        value: Expr,
+    },
 }

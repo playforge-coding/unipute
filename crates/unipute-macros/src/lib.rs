@@ -46,7 +46,9 @@ use syn::parse_macro_input;
 /// binding in group 0 unless `#[binding(group = 1, index = 3)]` says otherwise.
 ///
 /// `T` is a scalar, a vector, or a struct with [`Layout`](macro@Layout)
-/// derived on it.
+/// derived on it. A `&mut [AtomicU32]` or `&mut [AtomicI32]` is a buffer of
+/// atomics, reached with `.load()`, `.store()`, `.compare_exchange()` and the
+/// `fetch_` methods.
 ///
 /// # What a body may contain
 ///

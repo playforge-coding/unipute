@@ -17,7 +17,7 @@ use syn::visit::Visit;
 use unipute_ir as ir;
 
 use super::Scope;
-use super::types::value_type;
+use super::types::plain_value_type;
 
 /// A helper's name and signature.
 ///
@@ -162,17 +162,18 @@ fn signature(
                 "a `mut` parameter is not supported, copy it into a `let` instead",
             ));
         }
-        // `value_type` only ever yields a scalar, a vector or a struct, which
-        // is exactly what a shader function can take by value.
+        // A scalar, a vector or a struct, which is exactly what a shader
+        // function can take by value. An atomic is a place, not a value, so a
+        // helper is handed what `.load()` gave rather than the atomic.
         params.push(ir::Param {
             name: pattern.ident.to_string(),
-            ty: value_type(&typed.ty, structs)?,
+            ty: plain_value_type(&typed.ty, structs, "a parameter")?,
         });
     }
 
     let result = match &item.sig.output {
         syn::ReturnType::Default => None,
-        syn::ReturnType::Type(_, ty) => Some(value_type(ty, structs)?),
+        syn::ReturnType::Type(_, ty) => Some(plain_value_type(ty, structs, "a result")?),
     };
 
     Ok(Signature {

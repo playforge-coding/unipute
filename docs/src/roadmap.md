@@ -10,8 +10,9 @@ vectors and [your own structs](./kernels/structs.md), storage buffers and
 uniforms, the control flow in [Control flow](./kernels/control-flow.md), the
 functions in [Built-ins and functions](./kernels/builtins.md), the nested
 functions in [Your own functions](./kernels/functions.md), [workgroup
-memory](./kernels/workgroup-memory.md) and barriers, and binding layout you
-can read from the host.
+memory](./kernels/workgroup-memory.md) and barriers,
+[atomics](./kernels/atomics.md), and binding layout you can read from the
+host.
 
 That part is tested and is what the rest of this book describes.
 
@@ -39,11 +40,24 @@ path. A struct from a dependency would need another way of handing the fields
 over, which is the same question the serialised IR under [Other
 languages](#other-languages) answers.
 
-## Atomics
+## The rest of atomics
 
-No atomic operations, so no counters shared across invocations and no lock
-free algorithms. Naga has these as a type and a statement, so it is mostly a
-matter of surfacing them.
+An atomic is a `u32` or an `i32` in a buffer or in workgroup memory. Three
+things are missing around that.
+
+An atomic as a struct field. The IR and the back end allow it. What is not
+worked out is the host side, where the field would be a `u32` to one reader
+and an `AtomicU32` to another, and how the derive should spell that.
+
+Float atomics. Naga has `atomicAdd` on an `f32` behind a capability that only
+some hardware offers. Turning it on would mean a kernel that compiles for one
+device and not another, which needs a story about capabilities first.
+
+An old value from `compare_exchange`. It answers whether the exchange
+happened. The old value is there in the IR, but a target may fail the
+exchange with the values matching, so handing the old value back on its own
+would invite a loop that never ends. The two together are Rust's
+`Result<T, T>`, which the kernel language has no way to spell yet.
 
 ## Matrices
 
@@ -102,8 +116,9 @@ not there.
 
 ## How to read this list
 
-Everything here is a gap rather than a decision against. The one with the
-clearest path is atomics, since naga already supports them.
+Everything here is a gap rather than a decision against. The ones with the
+clearest path are swizzles and matrices, since naga already has both and
+neither touches the host.
 
 If one of these is blocking you, saying so is useful. It is easier to
 prioritise against a real kernel someone is trying to write than against a

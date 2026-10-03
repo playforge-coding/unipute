@@ -1,0 +1,5 @@
+error: a parameter cannot be an atomic, an atomic lives in a `&mut` buffer or in workgroup memory and is reached with `.load()` and the `fetch_` methods
+ --> tests/ui/atomic_passed_to_helper.rs:5:19
+  |
+5 |     fn bump(slot: AtomicU32) {
+  |                   ^^^^^^^^^

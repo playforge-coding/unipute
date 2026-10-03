@@ -57,7 +57,7 @@ pub fn lower(kernel: &ir::Kernel) -> Result<naga::Module> {
     // needs.
     for helper in &kernel.functions {
         let lowered = shared.lower_function(
-            &mut module.types,
+            &mut module,
             Signature {
                 name: helper.name.clone(),
                 arguments: Arguments::Params(&helper.params),
@@ -75,7 +75,7 @@ pub fn lower(kernel: &ir::Kernel) -> Result<naga::Module> {
     // would have written by hand.
     let used = used_built_ins(&kernel.body);
     let function = shared.lower_function(
-        &mut module.types,
+        &mut module,
         Signature {
             name: kernel.name.clone(),
             arguments: Arguments::BuiltIns(&used),
@@ -131,7 +131,7 @@ struct Shared<'a> {
 impl Shared<'_> {
     fn lower_function(
         &mut self,
-        module_types: &mut UniqueArena<naga::Type>,
+        module: &mut naga::Module,
         signature: Signature<'_>,
         locals: &[ir::Local],
         body: &[ir::Stmt],
@@ -141,6 +141,7 @@ impl Shared<'_> {
             ..Default::default()
         };
 
+        let module_types = &mut module.types;
         match &signature.arguments {
             Arguments::BuiltIns(built_ins) => {
                 for built_in in *built_ins {
@@ -172,7 +173,7 @@ impl Shared<'_> {
         let mut ctx = Context {
             kernel: self.kernel,
             types: &mut self.types,
-            module_types,
+            module,
             globals: &self.globals,
             workgroup: &self.workgroup,
             functions: &self.functions,
@@ -208,6 +209,14 @@ fn lower_resources(
         {
             return Err(Error::UnsupportedType(format!(
                 "uniform resource `{}` cannot be a slice, take it by `&mut` or pass a length",
+                resource.name
+            )));
+        }
+        // An atomic that nobody can write is a plain integer with extra
+        // steps, and naga refuses the operations on it anyway.
+        if !matches!(resource.access, ir::Access::ReadWrite) && contains_atomic(&resource.ty) {
+            return Err(Error::UnsupportedType(format!(
+                "resource `{}` holds atomics, so it has to be a read and write buffer",
                 resource.name
             )));
         }
@@ -318,6 +327,14 @@ impl Types {
                 };
                 naga::TypeInner::Array { base, size, stride }
             }
+            ir::Type::Atomic(scalar) => {
+                if !matches!(scalar, ir::Scalar::U32 | ir::Scalar::I32) {
+                    return Err(Error::UnsupportedType(format!(
+                        "an atomic holds a `u32` or an `i32`, not a `{scalar}`"
+                    )));
+                }
+                naga::TypeInner::Atomic(naga_scalar(*scalar))
+            }
             ir::Type::Struct(def) => {
                 check_struct_layout(def)?;
                 let mut members = Vec::with_capacity(def.members.len());
@@ -356,6 +373,30 @@ fn built_in_type(built_in: ir::BuiltIn) -> ir::Type {
     match built_in {
         ir::BuiltIn::LocalInvocationIndex => ir::Type::scalar(ir::Scalar::U32),
         _ => ir::Type::vector(ir::VectorSize::Three, ir::Scalar::U32),
+    }
+}
+
+/// Whether a value of this type has an atomic anywhere inside it.
+fn contains_atomic(ty: &ir::Type) -> bool {
+    match ty {
+        ir::Type::Atomic(_) => true,
+        ir::Type::Array { element, .. } => contains_atomic(element),
+        ir::Type::Struct(def) => def.members.iter().any(|m| contains_atomic(&m.ty)),
+        ir::Type::Scalar(_) | ir::Type::Vector { .. } => false,
+    }
+}
+
+fn naga_atomic_fn(op: ir::AtomicOp) -> naga::AtomicFunction {
+    use naga::AtomicFunction as A;
+    match op {
+        ir::AtomicOp::Add => A::Add,
+        ir::AtomicOp::Subtract => A::Subtract,
+        ir::AtomicOp::Min => A::Min,
+        ir::AtomicOp::Max => A::Max,
+        ir::AtomicOp::And => A::And,
+        ir::AtomicOp::Or => A::InclusiveOr,
+        ir::AtomicOp::Xor => A::ExclusiveOr,
+        ir::AtomicOp::Swap => A::Exchange { compare: None },
     }
 }
 
@@ -402,7 +443,9 @@ fn check_struct_layout(def: &ir::StructType) -> Result<()> {
 
 fn naga_scalar(scalar: ir::Scalar) -> naga::Scalar {
     let kind = match scalar {
-        ir::Scalar::Bool => naga::ScalarKind::Bool,
+        // Naga's bool is one byte wide, whatever the shader languages do with
+        // it in memory, and it rejects any other width.
+        ir::Scalar::Bool => return naga::Scalar::BOOL,
         ir::Scalar::I32 => naga::ScalarKind::Sint,
         ir::Scalar::U32 => naga::ScalarKind::Uint,
         ir::Scalar::F32 => naga::ScalarKind::Float,
@@ -446,13 +489,15 @@ fn allowed_in_continuing(stmt: &ir::Stmt) -> bool {
             .iter()
             .chain(else_branch)
             .all(allowed_in_continuing),
-        // A call is not allowed either. Naga's continuing block takes straight
-        // line code only, and nothing a front end puts in there needs one.
+        // A call is not allowed either, and nor is an atomic. Naga's
+        // continuing block takes straight line code only, and nothing a front
+        // end puts in there needs either.
         ir::Stmt::While { .. }
         | ir::Stmt::Break
         | ir::Stmt::Continue
         | ir::Stmt::Return { .. }
-        | ir::Stmt::Call { .. } => false,
+        | ir::Stmt::Call { .. }
+        | ir::Stmt::Atomic { .. } => false,
     }
 }
 
@@ -527,6 +572,10 @@ fn walk_stmt(stmt: &ir::Stmt, visit: &mut impl FnMut(&ir::Expr)) {
                 walk_expr(value, visit);
             }
         }
+        ir::Stmt::Atomic { place, value, .. } => {
+            walk_expr(place, visit);
+            walk_expr(value, visit);
+        }
         ir::Stmt::Break | ir::Stmt::Continue | ir::Stmt::Barrier(_) => {}
     }
 }
@@ -567,6 +616,19 @@ fn walk_expr(expr: &ir::Expr, visit: &mut impl FnMut(&ir::Expr)) {
                 walk_expr(arg, visit);
             }
         }
+        ir::Expr::Atomic { place, value, .. } => {
+            walk_expr(place, visit);
+            walk_expr(value, visit);
+        }
+        ir::Expr::AtomicCompareExchange {
+            place,
+            compare,
+            value,
+        } => {
+            walk_expr(place, visit);
+            walk_expr(compare, visit);
+            walk_expr(value, visit);
+        }
         ir::Expr::Literal(_)
         | ir::Expr::Local(_)
         | ir::Expr::Param(_)
@@ -598,10 +660,19 @@ impl From<ir::Literal> for LiteralKey {
     }
 }
 
+/// What an atomic statement takes, once lowered.
+struct AtomicOperands {
+    pointer: Handle<Expression>,
+    value: Handle<Expression>,
+    scalar: ir::Scalar,
+}
+
 struct Context<'a> {
     kernel: &'a ir::Kernel,
     types: &'a mut Types,
-    module_types: &'a mut UniqueArena<naga::Type>,
+    /// The module being built, for its type arena and for the predeclared
+    /// result type a compare and exchange needs.
+    module: &'a mut naga::Module,
     globals: &'a [Handle<naga::GlobalVariable>],
     workgroup: &'a [Handle<naga::GlobalVariable>],
     functions: &'a [Handle<naga::Function>],
@@ -660,7 +731,7 @@ impl Context<'_> {
         }
 
         for local in self.source_locals {
-            let ty = self.types.lower(self.module_types, &local.ty)?;
+            let ty = self.types.lower(&mut self.module.types, &local.ty)?;
             let variable = self.local_variables.append(
                 naga::LocalVariable {
                     name: Some(local.name.clone()),
@@ -836,8 +907,105 @@ impl Context<'_> {
                 };
                 block.push(Statement::ControlBarrier(barrier), SPAN);
             }
+            ir::Stmt::Atomic { op, place, value } => {
+                let mut emitter = naga::proc::Emitter::default();
+                emitter.start(&self.expressions);
+                let operands = self.atomic_operands(block, &mut emitter, place, value)?;
+                block.extend(emitter.finish(&self.expressions));
+                // Naga insists an exchange binds its result even when nobody
+                // reads it. The writers print it as an unused `let`.
+                let result = match op {
+                    ir::AtomicOp::Swap => Some(self.atomic_result(operands.scalar)?),
+                    _ => None,
+                };
+                block.push(
+                    Statement::Atomic {
+                        pointer: operands.pointer,
+                        fun: naga_atomic_fn(*op),
+                        value: operands.value,
+                        result,
+                    },
+                    SPAN,
+                );
+            }
         }
         Ok(())
+    }
+
+    /// The pointer and value of an atomic operation, lowered inside the
+    /// current emit range, plus the scalar the atomic holds.
+    fn atomic_operands(
+        &mut self,
+        block: &mut Block,
+        emitter: &mut naga::proc::Emitter,
+        place: &ir::Expr,
+        value: &ir::Expr,
+    ) -> Result<AtomicOperands> {
+        let scalar = match self.place_type(place)? {
+            ir::Type::Atomic(scalar) => scalar,
+            other => {
+                return Err(Error::Invalid(format!(
+                    "an atomic operation needs an atomic, but this is a `{other}`"
+                )));
+            }
+        };
+        let pointer = self.lower_place(block, emitter, place)?;
+        let value = self.lower_expr(block, emitter, value)?;
+        Ok(AtomicOperands {
+            pointer,
+            value,
+            scalar,
+        })
+    }
+
+    /// A fresh expression for an atomic operation to bind its old value to.
+    /// The caller has closed the emit range, since this is one of the
+    /// expressions that must sit outside one.
+    fn atomic_result(&mut self, scalar: ir::Scalar) -> Result<Handle<Expression>> {
+        let ty = self
+            .types
+            .lower(&mut self.module.types, &ir::Type::scalar(scalar))?;
+        Ok(self.expressions.append(
+            Expression::AtomicResult {
+                ty,
+                comparison: false,
+            },
+            SPAN,
+        ))
+    }
+
+    /// The type of a place expression, worked out from what it names.
+    fn place_type(&self, expr: &ir::Expr) -> Result<ir::Type> {
+        Ok(match expr {
+            ir::Expr::Resource(id) => self.kernel.resource(*id).ty.clone(),
+            ir::Expr::Shared(id) => self.kernel.shared(*id).ty.clone(),
+            ir::Expr::Local(id) => self
+                .source_locals
+                .get(id.0 as usize)
+                .ok_or_else(|| Error::Invalid(format!("local {} is out of range", id.0)))?
+                .ty
+                .clone(),
+            ir::Expr::Index { base, .. } => match self.place_type(base)? {
+                ir::Type::Array { element, .. } => *element,
+                other => {
+                    return Err(Error::Invalid(format!("`{other}` cannot be indexed")));
+                }
+            },
+            ir::Expr::Member { base, index } => match self.place_type(base)? {
+                ir::Type::Struct(def) => def
+                    .members
+                    .get(*index as usize)
+                    .ok_or_else(|| Error::Invalid(format!("`{}` has no member {index}", def.name)))?
+                    .ty
+                    .clone(),
+                other => return Err(Error::Invalid(format!("`{other}` has no members"))),
+            },
+            ir::Expr::Component { base, .. } => match self.place_type(base)? {
+                ir::Type::Vector { scalar, .. } => ir::Type::scalar(scalar),
+                other => return Err(Error::Invalid(format!("`{other}` has no components"))),
+            },
+            other => return Err(Error::Invalid(format!("{other:?} is not a place"))),
+        })
     }
 
     /// Lowers an expression that stands on its own, in an emit range of its
@@ -1121,7 +1289,7 @@ impl Context<'_> {
                 }
                 let ty = self
                     .types
-                    .lower(self.module_types, &ir::Type::vector(*size, *scalar))?;
+                    .lower(&mut self.module.types, &ir::Type::vector(*size, *scalar))?;
                 let mut lowered = Vec::with_capacity(components.len());
                 for component in components {
                     lowered.push(self.lower_expr(block, emitter, component)?);
@@ -1145,7 +1313,7 @@ impl Context<'_> {
                 }
                 let ty = self
                     .types
-                    .lower(self.module_types, &ir::Type::Struct(def.clone()))?;
+                    .lower(&mut self.module.types, &ir::Type::Struct(def.clone()))?;
                 let mut lowered = Vec::with_capacity(members.len());
                 for member in members {
                     lowered.push(self.lower_expr(block, emitter, member)?);
@@ -1163,6 +1331,69 @@ impl Context<'_> {
                 Ok(self
                     .expressions
                     .append(Expression::ArrayLength(global), SPAN))
+            }
+            // An atomic operation is a statement in naga, like a call, so the
+            // same dance: close the range, push the statement with its result
+            // bound, open a new range for whatever reads the result.
+            ir::Expr::Atomic { op, place, value } => {
+                let operands = self.atomic_operands(block, emitter, place, value)?;
+                block.extend(emitter.finish(&self.expressions));
+                let result = self.atomic_result(operands.scalar)?;
+                block.push(
+                    Statement::Atomic {
+                        pointer: operands.pointer,
+                        fun: naga_atomic_fn(*op),
+                        value: operands.value,
+                        result: Some(result),
+                    },
+                    SPAN,
+                );
+                emitter.start(&self.expressions);
+                Ok(result)
+            }
+            ir::Expr::AtomicCompareExchange {
+                place,
+                compare,
+                value,
+            } => {
+                let operands = self.atomic_operands(block, emitter, place, value)?;
+                let compare = self.lower_expr(block, emitter, compare)?;
+                block.extend(emitter.finish(&self.expressions));
+                // The result is naga's own two member struct, the old value
+                // and whether the exchange happened. Only the second is
+                // handed on: a target may fail the exchange even when the
+                // values matched, so the old value alone would not say.
+                let ty = self.module.generate_predeclared_type(
+                    naga::PredeclaredType::AtomicCompareExchangeWeakResult(naga_scalar(
+                        operands.scalar,
+                    )),
+                );
+                let result = self.expressions.append(
+                    Expression::AtomicResult {
+                        ty,
+                        comparison: true,
+                    },
+                    SPAN,
+                );
+                block.push(
+                    Statement::Atomic {
+                        pointer: operands.pointer,
+                        fun: naga::AtomicFunction::Exchange {
+                            compare: Some(compare),
+                        },
+                        value: operands.value,
+                        result: Some(result),
+                    },
+                    SPAN,
+                );
+                emitter.start(&self.expressions);
+                Ok(self.expressions.append(
+                    Expression::AccessIndex {
+                        base: result,
+                        index: 1,
+                    },
+                    SPAN,
+                ))
             }
         }
     }

@@ -600,6 +600,112 @@ fn a_small_uniform_struct_is_read_whole() {
     assert_eq!(gpu.read::<u32>(&output_buffer), expected);
 }
 
+/// A histogram with sixteen bins. Every invocation adds its value to a
+/// workgroup bin, and after the barrier the first sixteen lanes add the
+/// workgroup's bins into the global ones. Both steps race, and both are
+/// atomic, so nothing is lost.
+#[kernel(workgroup_size(64))]
+fn histogram(values: &[u32], bins: &mut [AtomicU32]) {
+    #[workgroup]
+    let local_bins: [AtomicU32; 16];
+
+    let index = global_id().x;
+    let lane = local_index();
+    if index < values.len() {
+        local_bins[values[index] % 16u32].fetch_add(1u32);
+    }
+    workgroup_barrier();
+    if lane < 16u32 {
+        bins[lane].fetch_add(local_bins[lane].load());
+    }
+}
+
+#[test]
+fn atomic_adds_lose_nothing() {
+    let Some(gpu) = gpu() else { return };
+
+    // Not a multiple of the workgroup size, and heavily skewed, so many
+    // invocations hit the same bin at once.
+    let values: Vec<u32> = (0..10_007).map(|i| (i * i + i / 3) % 16).collect();
+    let mut expected = vec![0u32; 16];
+    for value in &values {
+        expected[*value as usize] += 1;
+    }
+
+    let pipeline = gpu.pipeline::<histogram>();
+    let values_buffer = gpu.storage(&values);
+    let bins_buffer = gpu.storage(&[0u32; 16]);
+    let groups = host::workgroups([values.len() as u32, 1, 1], histogram::WORKGROUP_SIZE);
+    gpu.dispatch(&pipeline, &[&values_buffer, &bins_buffer], groups);
+
+    assert_eq!(gpu.read::<u32>(&bins_buffer), expected);
+}
+
+/// The largest and smallest value, found by every invocation racing to update
+/// one slot each, and a signed version of the same to cover `AtomicI32`.
+#[kernel(workgroup_size(64))]
+fn extremes(values: &[i32], result: &mut [AtomicI32]) {
+    let index = global_id().x;
+    if index >= values.len() {
+        return;
+    }
+    result[0].fetch_max(values[index]);
+    result[1].fetch_min(values[index]);
+}
+
+#[test]
+fn atomic_min_and_max_find_the_extremes() {
+    let Some(gpu) = gpu() else { return };
+
+    let values: Vec<i32> = (0..3000).map(|i| ((i * 7919) % 2003) - 1000).collect();
+    let expected = [*values.iter().max().unwrap(), *values.iter().min().unwrap()];
+
+    let pipeline = gpu.pipeline::<extremes>();
+    let values_buffer = gpu.storage(&values);
+    let result_buffer = gpu.storage(&[i32::MIN, i32::MAX]);
+    let groups = host::workgroups([values.len() as u32, 1, 1], extremes::WORKGROUP_SIZE);
+    gpu.dispatch(&pipeline, &[&values_buffer, &result_buffer], groups);
+
+    assert_eq!(gpu.read::<i32>(&result_buffer), expected);
+}
+
+/// Every invocation claims one slot in `slots` by swapping its own number in
+/// where a zero was, retrying on the next slot when someone got there first.
+/// Since there are exactly as many slots as invocations, everyone ends up
+/// with one, and the set of claimed numbers is every invocation once.
+#[kernel(workgroup_size(64))]
+fn claim(slots: &mut [AtomicU32], count: &u32) {
+    let me = global_id().x + 1u32;
+    if me > count {
+        return;
+    }
+    let mut slot = me % count;
+    let mut claimed = false;
+    while !claimed {
+        claimed = slots[slot].compare_exchange(0u32, me);
+        if !claimed {
+            slot = (slot + 1u32) % count;
+        }
+    }
+}
+
+#[test]
+fn compare_exchange_hands_out_each_slot_once() {
+    let Some(gpu) = gpu() else { return };
+
+    let count = 500u32;
+    let pipeline = gpu.pipeline::<claim>();
+    let slots_buffer = gpu.storage(&vec![0u32; count as usize]);
+    let count_buffer = gpu.uniform(&count);
+    let groups = host::workgroups([count, 1, 1], claim::WORKGROUP_SIZE);
+    gpu.dispatch(&pipeline, &[&slots_buffer, &count_buffer], groups);
+
+    let mut claimed = gpu.read::<u32>(&slots_buffer);
+    claimed.sort_unstable();
+    let expected: Vec<u32> = (1..=count).collect();
+    assert_eq!(claimed, expected);
+}
+
 /// A second bind group. `amount` takes index 2 rather than 0 so that its
 /// binding number is unique across groups, which is what the GLSL target
 /// needs.

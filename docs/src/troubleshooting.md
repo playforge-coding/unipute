@@ -149,6 +149,13 @@ component vector follows a scalar. Add the padding field the message names,
 or move the vector before the scalar. [Your own
 structs](./kernels/structs.md#where-the-bytes-go) has the rules.
 
+### `this is an atomic, read it with .load() or update it with one of the fetch_ methods`
+
+An `AtomicU32` or `AtomicI32` is not read or assigned like a number. `x.load()`
+reads it, `x.store(v)` writes it, `x.fetch_add(v)` and the rest update it in
+one step. The same goes for `+=`, which has its own message naming the
+method. [Atomics](./kernels/atomics.md) has the list.
+
 ### `X needs #[repr(C)], so that its fields sit where the kernel expects them`
 
 Add it. Without it Rust may reorder the fields, and then nothing about where

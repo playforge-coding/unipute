@@ -35,7 +35,9 @@ fn block_sum(input: &[f32], output: &mut [f32]) {
 The type is a scalar, a vector, or a fixed length array of either. `[f32; 64]`
 is the usual shape: one slot per invocation, indexed by `local_index()`. An
 array of arrays such as `[[f32; 8]; 8]` works too, for a tile with two
-dimensions, and is indexed as `tile[y][x]`.
+dimensions, and is indexed as `tile[y][x]`. It can also be an `AtomicU32` or
+an array of them, for a counter or a histogram the whole group updates at
+once, which [Atomics](./atomics.md) covers.
 
 There is no value to give it, because there is no single invocation to give
 it. Every invocation writes its own part, and a barrier makes the parts

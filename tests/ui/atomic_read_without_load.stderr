@@ -1,0 +1,5 @@
+error: this is an atomic, read it with `.load()` or update it with one of the `fetch_` methods
+ --> tests/ui/atomic_read_without_load.rs:5:17
+  |
+5 |     output[0] = counter[0];
+  |                 ^^^^^^^^^^

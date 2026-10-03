@@ -177,6 +177,14 @@ pub enum Type {
     /// A struct, carrying its own layout. Two struct types are the same type
     /// when their name, members and offsets are all the same.
     Struct(StructType),
+    /// A `u32` or `i32` that several invocations may update at once, through
+    /// the atomic operations and nothing else. It has the size and alignment
+    /// of its scalar, so the host sees a plain integer.
+    ///
+    /// Atomics live in storage buffers and workgroup memory. A local, a
+    /// parameter or a uniform cannot be one, since no invocation could race
+    /// another for it there.
+    Atomic(Scalar),
 }
 
 impl Type {
@@ -199,10 +207,14 @@ impl Type {
     }
 
     /// The scalar every component of this type is made of, if there is one.
+    ///
+    /// An atomic answers `None`. It holds a scalar, but it is not one, and a
+    /// front end that let an untyped literal take its type from an atomic
+    /// would be letting the atomic stand where a value goes.
     pub fn component_scalar(&self) -> Option<Scalar> {
         match self {
             Self::Scalar(scalar) | Self::Vector { scalar, .. } => Some(*scalar),
-            Self::Array { .. } | Self::Struct(_) => None,
+            Self::Array { .. } | Self::Struct(_) | Self::Atomic(_) => None,
         }
     }
 
@@ -215,7 +227,7 @@ impl Type {
     /// layout says.
     pub fn size(&self) -> Option<u32> {
         Some(match self {
-            Self::Scalar(scalar) => u32::from(scalar.width()),
+            Self::Scalar(scalar) | Self::Atomic(scalar) => u32::from(scalar.width()),
             Self::Vector { size, scalar } => u32::from(size.count()) * u32::from(scalar.width()),
             Self::Array {
                 element,
@@ -233,7 +245,7 @@ impl Type {
     /// member.
     pub fn alignment(&self) -> u32 {
         match self {
-            Self::Scalar(scalar) => u32::from(scalar.width()),
+            Self::Scalar(scalar) | Self::Atomic(scalar) => u32::from(scalar.width()),
             Self::Vector { size, scalar } => {
                 let width = u32::from(scalar.width());
                 match size {
@@ -269,6 +281,9 @@ impl fmt::Display for Type {
             } => write!(f, "[{element}; {len}]"),
             Self::Array { element, len: None } => write!(f, "[{element}]"),
             Self::Struct(def) => f.write_str(&def.name),
+            Self::Atomic(Scalar::I32) => f.write_str("AtomicI32"),
+            Self::Atomic(Scalar::U32) => f.write_str("AtomicU32"),
+            Self::Atomic(scalar) => write!(f, "Atomic<{scalar}>"),
         }
     }
 }

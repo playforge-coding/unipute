@@ -6,8 +6,8 @@
 #![cfg(feature = "wgsl")]
 
 use unipute_ir::{
-    Access, BarrierScope, BinaryOp, BuiltIn, Expr, Function, FunctionId, Kernel, Literal, Local,
-    LocalId, MathFn, Param, ParamId, Resource, ResourceId, Scalar, Shared, SharedId, Stmt,
+    Access, AtomicOp, BarrierScope, BinaryOp, BuiltIn, Expr, Function, FunctionId, Kernel, Literal,
+    Local, LocalId, MathFn, Param, ParamId, Resource, ResourceId, Scalar, Shared, SharedId, Stmt,
     StructType, Type, VectorSize,
 };
 
@@ -431,6 +431,209 @@ fn particle_kernel() -> Kernel {
         },
     });
     kernel
+}
+
+/// A histogram: every invocation counts its value into a workgroup bin, then
+/// one invocation per bin adds the bin into the global one. Between them the
+/// statements use an atomic for its effect, an atomic for its old value, a
+/// load and a store of an atomic, and a compare and exchange.
+fn histogram_kernel() -> Kernel {
+    let mut kernel = Kernel::new("histogram", [64, 1, 1]);
+    kernel.resources.push(Resource {
+        name: "values".to_owned(),
+        group: 0,
+        binding: 0,
+        ty: Type::slice(Type::scalar(Scalar::U32)),
+        access: Access::Read,
+    });
+    kernel.resources.push(Resource {
+        name: "bins".to_owned(),
+        group: 0,
+        binding: 1,
+        ty: Type::slice(Type::Atomic(Scalar::U32)),
+        access: Access::ReadWrite,
+    });
+    kernel.shared.push(Shared {
+        name: "local_bins".to_owned(),
+        ty: Type::Array {
+            element: Box::new(Type::Atomic(Scalar::U32)),
+            len: Some(4),
+        },
+    });
+    kernel.locals.push(Local {
+        name: "lane".to_owned(),
+        ty: Type::scalar(Scalar::U32),
+    });
+    kernel.locals.push(Local {
+        name: "previous".to_owned(),
+        ty: Type::scalar(Scalar::U32),
+    });
+
+    let lane = LocalId(0);
+    let previous = LocalId(1);
+    let values = ResourceId(0);
+    let bins = ResourceId(1);
+    let local_bins = SharedId(0);
+    let global_bin = || Expr::Index {
+        base: Box::new(Expr::Resource(bins)),
+        index: Box::new(Expr::Local(lane)),
+    };
+    let local_bin = || Expr::Index {
+        base: Box::new(Expr::Shared(local_bins)),
+        index: Box::new(Expr::Local(lane)),
+    };
+
+    kernel.body.push(Stmt::Declare {
+        local: lane,
+        value: Some(Expr::BuiltIn(BuiltIn::LocalInvocationIndex)),
+    });
+    // local_bins[values[global_id().x] % 4].fetch_add(1);
+    kernel.body.push(Stmt::Atomic {
+        op: AtomicOp::Add,
+        place: Expr::Index {
+            base: Box::new(Expr::Shared(local_bins)),
+            index: Box::new(Expr::Binary {
+                op: BinaryOp::Modulo,
+                lhs: Box::new(Expr::Index {
+                    base: Box::new(Expr::Resource(values)),
+                    index: Box::new(Expr::Component {
+                        base: Box::new(Expr::BuiltIn(BuiltIn::GlobalInvocationId)),
+                        index: 0,
+                    }),
+                }),
+                rhs: Box::new(Expr::Literal(Literal::U32(4))),
+            }),
+        },
+        value: Expr::Literal(Literal::U32(1)),
+    });
+    kernel.body.push(Stmt::Barrier(BarrierScope::Workgroup));
+    kernel.body.push(Stmt::If {
+        condition: Expr::Binary {
+            op: BinaryOp::Less,
+            lhs: Box::new(Expr::Local(lane)),
+            rhs: Box::new(Expr::Literal(Literal::U32(4))),
+        },
+        then_branch: vec![
+            // let previous = bins[lane].fetch_add(local_bins[lane].load());
+            Stmt::Declare {
+                local: previous,
+                value: Some(Expr::Atomic {
+                    op: AtomicOp::Add,
+                    place: Box::new(global_bin()),
+                    value: Box::new(local_bin()),
+                }),
+            },
+            // if bins[lane].compare_exchange(previous, 0) { local_bins[lane].store(0); }
+            Stmt::If {
+                condition: Expr::AtomicCompareExchange {
+                    place: Box::new(global_bin()),
+                    compare: Box::new(Expr::Local(previous)),
+                    value: Box::new(Expr::Literal(Literal::U32(0))),
+                },
+                then_branch: vec![Stmt::Store {
+                    place: local_bin(),
+                    value: Expr::Literal(Literal::U32(0)),
+                }],
+                else_branch: Vec::new(),
+            },
+        ],
+        else_branch: Vec::new(),
+    });
+    kernel
+}
+
+#[test]
+fn atomics_come_out_as_atomic_calls() {
+    let wgsl = unipute_naga::compile_wgsl(&histogram_kernel()).unwrap();
+
+    assert!(wgsl.contains("array<atomic<u32>>"), "{wgsl}");
+    assert!(
+        wgsl.contains("var<workgroup> local_bins: array<atomic<u32>, 4>"),
+        "{wgsl}"
+    );
+    // The first add is a statement with no result, the second binds its old
+    // value.
+    assert!(wgsl.contains("atomicAdd("), "{wgsl}");
+    assert!(wgsl.contains("= atomicAdd("), "{wgsl}");
+    assert!(wgsl.contains("atomicLoad("), "{wgsl}");
+    assert!(wgsl.contains("atomicStore("), "{wgsl}");
+    assert!(wgsl.contains("atomicCompareExchangeWeak("), "{wgsl}");
+    assert!(wgsl.contains(".exchanged"), "{wgsl}");
+}
+
+#[test]
+fn a_swap_for_its_effect_still_binds_a_result() {
+    let mut kernel = histogram_kernel();
+    let Stmt::Atomic { op, .. } = &mut kernel.body[1] else {
+        unreachable!("the second statement is the atomic add");
+    };
+    *op = AtomicOp::Swap;
+
+    // Naga requires an exchange to bind its old value, so the lowering has
+    // to make one up. The interesting part is that this compiles at all.
+    let wgsl = unipute_naga::compile_wgsl(&kernel).unwrap();
+    assert!(wgsl.contains("atomicExchange("), "{wgsl}");
+}
+
+#[test]
+fn an_atomic_in_a_read_only_buffer_is_rejected() {
+    let mut kernel = histogram_kernel();
+    kernel.resources[1].access = Access::Read;
+
+    let error = unipute_naga::compile_wgsl(&kernel).unwrap_err();
+    assert!(error.to_string().contains("read and write"), "{error}");
+}
+
+#[test]
+fn an_atomic_operation_on_a_plain_integer_is_rejected() {
+    let mut kernel = histogram_kernel();
+    kernel.resources[1].ty = Type::slice(Type::scalar(Scalar::U32));
+
+    let error = unipute_naga::compile_wgsl(&kernel).unwrap_err();
+    assert!(error.to_string().contains("needs an atomic"), "{error}");
+}
+
+#[test]
+fn a_float_atomic_is_rejected() {
+    let mut kernel = histogram_kernel();
+    kernel.resources[1].ty = Type::slice(Type::Atomic(Scalar::F32));
+
+    let error = unipute_naga::compile_wgsl(&kernel).unwrap_err();
+    assert!(error.to_string().contains("not a `f32`"), "{error}");
+}
+
+#[cfg(feature = "msl")]
+#[test]
+fn msl_writes_atomics() {
+    let msl = unipute_naga::compile_msl(&histogram_kernel()).unwrap();
+    assert!(msl.contains("atomic_fetch_add_explicit"), "{msl}");
+    assert!(
+        msl.contains("atomic_compare_exchange_weak_explicit"),
+        "{msl}"
+    );
+}
+
+#[cfg(feature = "hlsl")]
+#[test]
+fn hlsl_writes_atomics() {
+    let hlsl = unipute_naga::compile_hlsl(&histogram_kernel()).unwrap();
+    assert!(hlsl.contains("InterlockedAdd"), "{hlsl}");
+    assert!(hlsl.contains("InterlockedCompareExchange"), "{hlsl}");
+}
+
+#[cfg(feature = "glsl")]
+#[test]
+fn glsl_writes_atomics() {
+    let glsl = unipute_naga::compile_glsl(&histogram_kernel()).unwrap();
+    assert!(glsl.contains("atomicAdd("), "{glsl}");
+    assert!(glsl.contains("atomicCompSwap("), "{glsl}");
+}
+
+#[cfg(feature = "spv")]
+#[test]
+fn spirv_takes_atomics() {
+    let words = unipute_naga::compile_spirv(&histogram_kernel()).unwrap();
+    assert_eq!(words.first(), Some(&0x0723_0203));
 }
 
 #[test]

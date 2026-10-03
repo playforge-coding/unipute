@@ -3,8 +3,8 @@
 use unipute_ir as ir;
 
 use super::Scope;
-use super::expr::{Typed, compound_op};
-use super::types::{shared_type, value_type};
+use super::expr::{ATOMIC_METHODS, Typed, compound_op};
+use super::types::{plain_value_type, shared_type, value_type};
 
 /// What the attributes on a `let` ask for.
 #[derive(PartialEq)]
@@ -230,7 +230,7 @@ impl Scope<'_> {
 
         let annotated = annotation
             .as_ref()
-            .map(|ty| value_type(ty, self.structs))
+            .map(|ty| plain_value_type(ty, self.structs, "a local"))
             .transpose()?;
         let expected = annotated.as_ref().and_then(ir::Type::component_scalar);
         let value = self.expr(&init.expr, expected)?;
@@ -292,11 +292,71 @@ impl Scope<'_> {
                 Ok(())
             }
             syn::Expr::Call(call) => self.call_stmt(call, out),
+            syn::Expr::MethodCall(call) => self.method_stmt(call, out),
             other => Err(syn::Error::new_spanned(
                 other,
                 "this statement has no effect, a kernel statement must assign, branch, loop or call a built-in",
             )),
         }
+    }
+
+    /// A method call written as a statement, which is an atomic operation
+    /// done for its effect: `counter.store(0)` or `counter.fetch_add(1)` with
+    /// the old value dropped.
+    fn method_stmt(
+        &mut self,
+        call: &syn::ExprMethodCall,
+        out: &mut Vec<ir::Stmt>,
+    ) -> syn::Result<()> {
+        let method = call.method.to_string();
+        let receiver = self.place_or_value(&call.receiver, None)?;
+        let Some(ir::Type::Atomic(scalar)) = receiver.ty else {
+            return Err(syn::Error::new_spanned(
+                call,
+                format!(
+                    "`{method}` here produces a value that is discarded, assign it to something"
+                ),
+            ));
+        };
+
+        match method.as_str() {
+            "store" => {
+                let value = self.atomic_argument(call, 0, 1, scalar)?;
+                out.push(ir::Stmt::Store {
+                    place: receiver.expr,
+                    value,
+                });
+            }
+            "load" => {
+                return Err(syn::Error::new_spanned(
+                    call,
+                    "`load` reads the atomic and this throws the value away, assign it to \
+                     something",
+                ));
+            }
+            "compare_exchange" => {
+                return Err(syn::Error::new_spanned(
+                    call,
+                    "`compare_exchange` says whether it swapped, and a swap that may not have \
+                     happened is worth checking, so use the result in an `if`",
+                ));
+            }
+            other => {
+                let Some(op) = ir::AtomicOp::from_method_name(other) else {
+                    return Err(syn::Error::new_spanned(
+                        &call.method,
+                        format!("`{other}` is not an atomic operation, {ATOMIC_METHODS}"),
+                    ));
+                };
+                let value = self.atomic_argument(call, 0, 1, scalar)?;
+                out.push(ir::Stmt::Atomic {
+                    op,
+                    place: receiver.expr,
+                    value,
+                });
+            }
+        }
+        Ok(())
     }
 
     fn return_stmt(&mut self, ret: &syn::ExprReturn, out: &mut Vec<ir::Stmt>) -> syn::Result<()> {
@@ -387,6 +447,12 @@ impl Scope<'_> {
 
     fn assign(&mut self, assign: &syn::ExprAssign, out: &mut Vec<ir::Stmt>) -> syn::Result<()> {
         let place = self.place(&assign.left)?;
+        if let Some(ir::Type::Atomic(_)) = place.ty {
+            return Err(syn::Error::new_spanned(
+                &assign.left,
+                "this is an atomic, write to it with `.store(value)`",
+            ));
+        }
         let expected = place.ty.as_ref().and_then(ir::Type::component_scalar);
         let value = self.expr(&assign.right, expected)?;
         out.push(ir::Stmt::Store {
@@ -403,6 +469,20 @@ impl Scope<'_> {
     ) -> syn::Result<()> {
         let op = compound_op(binary.op).expect("checked by the caller");
         let place = self.place(&binary.left)?;
+        if let Some(ir::Type::Atomic(_)) = place.ty {
+            let hint = match op {
+                ir::BinaryOp::Add => "`.fetch_add(value)`",
+                ir::BinaryOp::Subtract => "`.fetch_sub(value)`",
+                ir::BinaryOp::And => "`.fetch_and(value)`",
+                ir::BinaryOp::Or => "`.fetch_or(value)`",
+                ir::BinaryOp::Xor => "`.fetch_xor(value)`",
+                _ => "one of the `fetch_` methods, or `.load()` and `.store()`",
+            };
+            return Err(syn::Error::new_spanned(
+                &binary.left,
+                format!("this is an atomic, update it with {hint}"),
+            ));
+        }
         // The destination is also the first operand, so read it as a value too.
         let current = self.expr(&binary.left, None)?;
         let expected = place.ty.as_ref().and_then(ir::Type::component_scalar);
@@ -423,7 +503,7 @@ impl Scope<'_> {
     fn place(&mut self, expr: &syn::Expr) -> syn::Result<Typed> {
         match expr {
             syn::Expr::Path(_) | syn::Expr::Index(_) | syn::Expr::Field(_) => {
-                let typed = self.expr(expr, None)?;
+                let typed = self.place_or_value(expr, None)?;
                 match &typed.expr {
                     ir::Expr::Local(_)
                     | ir::Expr::Index { .. }

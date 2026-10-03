@@ -5,7 +5,7 @@ The repository has a set of runnable examples in
 Each one is about a different part of the job, so between them they cover most
 of what this book describes.
 
-Four of them run their kernels on a GPU and check the answer. Unipute stops at
+Five of them run their kernels on a GPU and check the answer. Unipute stops at
 the shader, so the wgpu code that takes it from there lives in
 [`examples/host/mod.rs`](https://github.com/playforge-coding/unipute/blob/main/examples/host/mod.rs),
 shared by those examples and by the GPU tests. It is the [Running a
@@ -90,6 +90,21 @@ component vector wants a scalar after it, and where that is not possible a
 padding field makes up the difference. The first step is checked against the
 same maths on the CPU, and the host counts the particles still alive as the
 steps go by.
+
+## histogram
+
+Atomics, in workgroup memory and in a buffer.
+
+```bash
+cargo run --example histogram
+```
+
+A brightness histogram of an image, where thousands of pixels want to add one
+to the same sixteen bins at the same time. Each workgroup counts into its own
+`[AtomicU32; 16]` with `fetch_add`, and after the barrier sixteen lanes add
+the workgroup's bins into the buffer, which every other workgroup is adding
+into as well. The host prints the bins as bars and checks each against a count
+made on the CPU, which comes out exact, because nothing was lost on the way.
 
 ## inspect_ir
 
