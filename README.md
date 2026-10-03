@@ -426,6 +426,22 @@ Pushing to `main` builds the book and publishes it to GitHub Pages through
 it without publishing. The repository's Pages source has to be set to "GitHub
 Actions" once, under Settings then Pages, for the deployment to land.
 
+### Releasing
+
+Publishing a GitHub release publishes every crate in the workspace to
+crates.io through [.github/workflows/publish.yml](.github/workflows/publish.yml).
+Pushing a tag alone does not, and neither does saving a draft.
+
+1. Bump the version in `Cargo.toml`, both `[package]` and `[workspace.package]`
+   and the three workspace dependency entries, and merge that to `main`.
+2. Create a release whose tag is that version, with or without a leading `v`
+   (`0.3.0` or `v0.3.0`). The workflow refuses to publish if the tag and the
+   crate versions disagree.
+
+The workflow needs a crates.io API token with the `publish-new` and
+`publish-update` scopes, stored as the `CARGO_REGISTRY_TOKEN` repository
+secret.
+
 ## License
 
 Dual licensed under either of

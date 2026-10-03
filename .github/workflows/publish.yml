@@ -1,0 +1,67 @@
+name: Publish
+
+# Publishing a GitHub release is what ships to crates.io. Pushing a tag on its
+# own does nothing, and neither does saving a draft release.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+# Two releases published close together should go out one after the other
+# rather than racing, and one that has started uploading should never be
+# cancelled part way through.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # .cargo/config.toml sets sccache as the rustc wrapper, so every job that
+  # runs cargo from inside the checkout has to have it on PATH. This points it
+  # at the Actions cache for its storage.
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      # A release event checks out the commit the release's tag points at.
+      - uses: actions/checkout@v7
+
+      # The toolchain comes from rust-toolchain.toml, same as the other jobs.
+      - name: Install Rust
+        run: rustup show
+
+      - uses: mozilla-actions/sccache-action@v0.0.11
+
+      # Every crate in the workspace ships at the same version, and that
+      # version has to be the one the release is named after. Catching a
+      # mismatch here is much cheaper than yanking a version that went out by
+      # mistake. A leading "v" on the tag is allowed.
+      - name: Check the release tag matches the crate versions
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          expected="${TAG#v}"
+          mismatched=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r --arg v "$expected" \
+              '.packages[] | select(.version != $v) | "\(.name) \(.version)"')
+          if [ -n "$mismatched" ]; then
+            echo "::error::release $TAG does not match these crate versions:"
+            echo "$mismatched"
+            exit 1
+          fi
+          echo "Publishing version $expected"
+
+      # Cargo works out the order from the dependency graph, so unipute-ir
+      # goes out before the crates that need it, and unipute goes last. Each
+      # crate is packaged and built from its packaged form before upload.
+      - name: Publish the workspace
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --workspace
